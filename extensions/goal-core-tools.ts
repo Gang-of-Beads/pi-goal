@@ -5,7 +5,7 @@ import { formatDuration, formatTokenValue, statusLabel, truncateText } from "./g
 import { extractVerificationContract } from "./goal-contract.ts";
 import { detailedSummary, goalDetails, renderGoalResult } from "./goal-format.ts";
 import { budgetLine } from "./goal-accounting.ts";
-import { buildGoalCreatedReport, buildTaskSummary, findTaskInTree, validateGoalAgentPause, validateGoalBlock } from "./goal-policy.ts";
+import { buildGoalCreatedReport, buildTaskSummary, findTaskInTree, validateGoalAgentPause, validateGoalBlock, validateResumeGoal } from "./goal-policy.ts";
 import { buildUnfocusedOpenGoalsSummary, otherOpenGoalCount } from "./goal-pool.ts";
 import { readGoalLedger } from "./goal-ledger.ts";
 import { loadGoalSettings } from "./goal-settings.ts";
@@ -505,6 +505,58 @@ async function runGoalAgentPauseFlow(ctx: ExtensionContext, reason: string | und
 	};
 }
 
+/**
+ * Agent-owned resume: update_goal({status: "active"}) restarts a goal the
+ * agent (or the user) paused, so "continue the goal" is something the agent
+ * can act on with its own tool instead of waiting for /goal-resume. The
+ * mutation mirrors the resume command exactly - status, continuation flag and
+ * every stale pause field - and records goal_resumed with source "agent".
+ */
+async function runGoalAgentResumeFlow(ctx: ExtensionContext): Promise<AgentToolResult<unknown>> {
+	core.reconcileFocusedGoalFromDisk(ctx);
+	const gate = validateResumeGoal(core.state.goal);
+	if (!gate.ok) {
+		return { content: [{ type: "text", text: gate.message }], details: goalDetails(core.state.goal) };
+	}
+	if (!core.state.goal) throw new Error("Goal disappeared during resume validation.");
+	const result = core.goalService.apply(ctx, {
+		reconcile: false,
+		refreshFromDisk: true,
+		mutate: (g) => ({
+			...g,
+			status: "active" as const,
+			autoContinue: true,
+			stopReason: undefined,
+			pauseReason: undefined,
+			pauseSuggestedAction: undefined,
+			updatedAt: nowIso(),
+		}),
+		ledger: (written) => [{
+			type: "goal_resumed" as const,
+			goalId: written.id,
+			reason: "agent",
+			at: written.updatedAt,
+		}],
+	});
+	if (result.ok) {
+		core.beginAccounting();
+		core.updateUI(ctx);
+		core.queueContinuation(ctx, true);
+		return {
+			content: [{ type: "text", text: "Goal resumed. Continue the objective now; the checkpoint loop is armed again." }],
+			details: goalDetails(core.state.goal),
+			terminate: false,
+		};
+	}
+	// The mutation failed: say so instead of claiming the goal is running, and
+	// keep the turn alive so the agent can retry.
+	return {
+		content: [{ type: "text", text: `Goal resume failed: ${result.message ?? "the state mutation was rejected"}. The goal is NOT active.` }],
+		details: goalDetails(core.state.goal),
+		terminate: false,
+	};
+}
+
 pi.registerTool(defineTool({
 	name: "update_goal",
 	label: "Update Goal",
@@ -518,7 +570,7 @@ pi.registerTool(defineTool({
 		"An optional completion_summary is passed to the auditor as an UNTRUSTED claim — it is never evidence and can never substitute for real artifacts.",
 	],
 	parameters: Type.Object({
-		status: StringEnum(["complete", "blocked", "paused"] as const, { description: "complete runs the independent auditor; blocked records a distinct agent-blocked state; paused is an immediate agent pause with a required reason." }),
+		status: StringEnum(["complete", "blocked", "paused", "active"] as const, { description: "complete runs the independent auditor; blocked records a distinct agent-blocked state; paused is an immediate agent pause with a required reason." }),
 		reason: Type.Optional(Type.String({ description: "Required when status is paused or blocked: describe the concrete blocker." })),
 		attempted_actions: Type.Optional(Type.Array(Type.String({ maxLength: 240 }), { maxItems: 8, description: "Optional: up to 8 concrete actions already attempted against this blocker." })),
 		suggested_action: Type.Optional(Type.String({ description: "Optional suggested next step when status is paused." })),
@@ -537,6 +589,9 @@ pi.registerTool(defineTool({
 		}
 		if (params.status === "paused") {
 			return runGoalAgentPauseFlow(ctx, params.reason, params.suggested_action);
+		}
+		if (params.status === "active") {
+			return runGoalAgentResumeFlow(ctx);
 		}
 		return deps.runGoalCompletionFlow(core, ctx, params.completion_summary);
 	},

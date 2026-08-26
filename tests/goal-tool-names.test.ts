@@ -104,7 +104,16 @@ test("work tool set covers the five goal tools plus common host work tools", () 
 	}
 });
 
-test("POST_STOP_ALLOWED_TOOLS only includes get_goal", () => {
-	assert.equal(POST_STOP_ALLOWED_TOOLS.length, 1, "post-stop allowlist should be minimal");
-	assert.equal(POST_STOP_ALLOWED_TOOLS[0], "get_goal");
+test("POST_STOP_ALLOWED_TOOLS covers state reads and lifecycle control only", () => {
+	// A stopped turn must not do work, but it must still be able to read the
+	// goal and change its lifecycle: without update_goal here a paused goal can
+	// never be resumed by the agent, so "continue the goal" would depend on the
+	// user running a slash command.
+	assert.deepEqual([...POST_STOP_ALLOWED_TOOLS].sort(), ["get_goal", "update_goal"]);
+	// Execution tools stay blocked: a stopped turn reports and yields, it does
+	// not keep editing the workspace.
+	for (const name of ["write", "edit", "bash", "read", "grep", "find", "ls"]) {
+		assert.equal(POST_STOP_ALLOWED_TOOLS.includes(name as typeof POST_STOP_ALLOWED_TOOLS[number]), false,
+			`post-stop allowlist must not include execution tool ${name}`);
+	}
 });

@@ -66,5 +66,10 @@ export const GOAL_PROGRESS_TOOL_NAMES = [
 	"ls",
 ] as const;
 
-/** Tools the model may still call on a stopped turn (state reads only). */
-export const POST_STOP_ALLOWED_TOOLS = ["get_goal"] as const;
+/**
+ * Tools the model may still call on a stopped turn: goal state reads, plus the
+ * lifecycle tool itself. update_goal has to stay reachable or a paused goal
+ * could never be resumed by the agent - the stale-checkpoint guard would block
+ * the one call that ends the stall.
+ */
+export const POST_STOP_ALLOWED_TOOLS = ["get_goal", "update_goal"] as const;

@@ -655,3 +655,37 @@ test("create_goal rejects fractional, zero, and unsafe token_budget values", asy
 		f.cleanup();
 	}
 });
+
+// ── agent-owned resume: the agent must be able to restart its own paused goal ──
+
+test("update_goal(active) resumes a paused goal so the agent can continue on request", async () => {
+	const f = makeFixture();
+	try {
+		const h = createHarness({ cwd: f.cwd, sessionEntries: f.sessionEntries });
+		await start(h);
+		const update = h.tools.get("update_goal")!;
+
+		// Pause it the way the agent would when it hits a blocker.
+		await (update.execute as any)("pause-1", { status: "paused", reason: "waiting on the user" }, undefined, undefined, h.ctx);
+		const pausedFile = parseGoalFile(path.join(f.cwd, ".pi", "goals", activeGoalFiles(f.cwd)[0]!));
+		assert.equal(pausedFile?.status, "paused", "precondition: the goal is paused");
+
+		// The user says "continue the goal": the agent resumes it with its own tool.
+		const result = await (update.execute as any)("resume-1", { status: "active" }, undefined, undefined, h.ctx);
+		const text = result.content?.[0]?.text ?? "";
+		assert.ok(/resumed/i.test(text), `must report the resume, got: ${text}`);
+		assert.ok(result.terminate !== true, "resuming must keep the turn alive so work continues");
+
+		const resumed = parseGoalFile(path.join(f.cwd, ".pi", "goals", activeGoalFiles(f.cwd)[0]!));
+		assert.equal(resumed?.status, "active", "the goal must be active again");
+		assert.equal(resumed?.autoContinue, true, "auto-continue must be restored");
+		assert.equal(resumed?.pauseReason, undefined, "the stale pause reason must be cleared");
+		assert.equal(
+			ledgerEvents(f.cwd).filter((e) => e.type === "goal_resumed").length,
+			1,
+			"exactly one goal_resumed event",
+		);
+	} finally {
+		f.cleanup();
+	}
+});
