@@ -182,3 +182,48 @@ describe("GoalRuntime stale checkpoint state", () => {
 		assert.equal(runtime.getCheckpointGoalId(), null);
 	});
 });
+
+describe("GoalRuntime checkpoint circuit breaker", () => {
+  /**
+   * A checkpoint that produces no work must not be retried forever.
+   *
+   * The loop this exists for: an agent woken by a checkpoint declined to act -
+   * it was reading a stale pause banner - and wrote nothing, so the goal's
+   * revision did not move. The goal was still active and auto-continuing, so
+   * the next checkpoint fired, was declined again, and only a human noticed.
+   * An unchanged revision across consecutive checkpoints is the observable
+   * signal that the agent is not moving, whatever the reason.
+   */
+  it("stops sending checkpoints when the goal stops changing", () => {
+    const goal = activeGoal();
+    const { runtime, sent } = makeRuntime({ isActionable: () => true, getGoal: () => goal });
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      runtime.queueContinuation(mockCtx(), goal, true);
+      runtime.flushContinuationForTest(mockCtx(), goal.id);
+    }
+
+    assert.ok(sent.length > 0, "expected at least one checkpoint");
+    assert.ok(
+      sent.length <= 3,
+      `expected the breaker to stop a stalled goal, but sent ${String(sent.length)} checkpoints`,
+    );
+  });
+
+  it("keeps going while the goal is actually progressing", () => {
+    const goal = activeGoal();
+    let revision = 0;
+    const { runtime, sent } = makeRuntime({
+      isActionable: () => true,
+      getGoal: () => ({ ...goal, revision }),
+    });
+
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      revision += 1;
+      runtime.queueContinuation(mockCtx(), goal, true);
+      runtime.flushContinuationForTest(mockCtx(), goal.id);
+    }
+
+    assert.equal(sent.length, 6, "a goal that keeps changing must keep being driven");
+  });
+});

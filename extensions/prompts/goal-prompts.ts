@@ -29,11 +29,24 @@ function escapeXmlAttribute(value: string): string {
  * the length assertion fails loudly if escaping or ids ever push it past the
  * cap, instead of silently regrowing session files.
  */
-export function checkpointTriggerPrompt(goalId: string): string {
+/**
+ * The checkpoint that wakes the agent for the next step.
+ *
+ * It carries the live status because the session's system context does not.
+ * A session that began while the goal was paused keeps "[PI GOAL PAUSED ...]"
+ * for the rest of its life, so an agent woken after a resume would read a
+ * stale banner, decline to work, and be woken again by the next checkpoint.
+ * The checkpoint is the only message that arrives after the transition, so it
+ * is the only place current truth can reach the agent.
+ */
+export function checkpointTriggerPrompt(goalId: string, status?: string): string {
+	const liveStatus = status === undefined || status === ""
+		? ""
+		: ` status="${escapeXmlAttribute(status)}"`;
 	const content =
 		`<pi_goal_continuation ` +
 		`goal_id="${escapeXmlAttribute(goalId)}" ` +
-		`kind="checkpoint" v="2"/>`;
+		`kind="checkpoint" v="2"${liveStatus}/>`;
 	assertBounded(content);
 	return content;
 }

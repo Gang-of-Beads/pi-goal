@@ -418,3 +418,22 @@ test("legacy-v1 restores pre-PR-E wording but never full checkpoint persistence"
 		else process.env.PI_GOAL_PROMPT_PROFILE = originalEnv;
 	}
 });
+
+test("checkpoint states the live status so a stale pause banner cannot win", () => {
+	// A session that began while the goal was paused carries
+	// "[PI GOAL PAUSED ...]" in its system context for the rest of its life.
+	// Resuming the goal does not rewrite that banner, so a checkpoint carrying
+	// only a goal id left the agent reading stale state: it declined to work,
+	// the goal was still active and auto-continuing, and the checkpoint fired
+	// again - an unbounded refuse/retry loop that only a human could break.
+	// The checkpoint is the one message that arrives after the resume, so it is
+	// the one place that can carry current truth.
+	const current = goal({ id: "resumed-goal" });
+	const continuation = checkpointTriggerPrompt(current.id, "active");
+
+	assert.match(continuation, /status="active"/);
+	assert.match(
+		continuation,
+		/^<pi_goal_continuation goal_id="resumed-goal" kind="checkpoint" v="2" status="active"\/>$/,
+	);
+});

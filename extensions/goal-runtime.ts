@@ -16,6 +16,18 @@ import { networkErrorBackoffPlan, type NetworkErrorBackoffPlan } from "./network
 
 export const CONTINUATION_IDLE_RETRY_MS = 50;
 
+/**
+ * How many checkpoints may pass without the goal changing before the runtime
+ * stops driving it.
+ *
+ * A checkpoint exists to make the agent take the next step. If the goal's
+ * revision has not moved after this many of them, the agent is not taking one
+ * - it may be reading stale state, or refusing, or failing silently - and
+ * sending more cannot help. Stopping turns an unbounded loop into a bounded
+ * one that a person can see and act on.
+ */
+export const MAX_STALLED_CHECKPOINTS = 3;
+
 const POST_STOP_ALLOWED = new Set<string>(POST_STOP_ALLOWED_TOOLS);
 
 export interface GoalRuntimeHooks {
@@ -45,6 +57,10 @@ export class GoalRuntime {
 
 	/** Monotonic per-session counter persisted on v2 checkpoint details (issue #30). */
 	private checkpointSeq = 0;
+
+	// ── stalled-checkpoint breaker ───────────────────────────────────────
+	private lastCheckpointRevision: number | null = null;
+	private stalledCheckpoints = 0;
 
 	// ── one-time steering reminders ──────────────────────────────────────
 	private postCompactReminderPending = false;
@@ -97,6 +113,11 @@ export class GoalRuntime {
 		this.continuationScheduledFor = goalId;
 		this.continuationTimer = setTimeout(() => this.sendQueuedContinuation(ctx, goalId), delay);
 		this.continuationTimer.unref?.();
+	}
+
+	/** Deterministic entry point for the scheduled send, so tests need no timers. */
+	flushContinuationForTest(ctx: ExtensionContext, goalId: string): void {
+		this.sendQueuedContinuation(ctx, goalId);
 	}
 
 	/** Cancel a pending continuation for a goal id (e.g. after update/clear/focus change). */
@@ -172,6 +193,17 @@ export class GoalRuntime {
 			if (this.continuationQueuedFor === scheduledGoalId) this.continuationQueuedFor = null;
 			return;
 		}
+		const revision = goal.revision ?? 0;
+		if (this.lastCheckpointRevision === revision) {
+			this.stalledCheckpoints += 1;
+		} else {
+			this.lastCheckpointRevision = revision;
+			this.stalledCheckpoints = 0;
+		}
+		if (this.stalledCheckpoints >= MAX_STALLED_CHECKPOINTS) {
+			this.continuationQueuedFor = null;
+			return;
+		}
 		this.checkpointSeq += 1;
 		this.continuationQueuedFor = goal.id;
 		const details: GoalCheckpointDetailsV2 = {
@@ -183,7 +215,7 @@ export class GoalRuntime {
 			checkpointSeq: this.checkpointSeq,
 			timestamp: Date.now(),
 		};
-		this.hooks.sendFollowUp(checkpointTriggerPrompt(goal.id), details as unknown as Record<string, unknown>);
+		this.hooks.sendFollowUp(checkpointTriggerPrompt(goal.id, goal.status), details as unknown as Record<string, unknown>);
 	}
 
 	// ── turn-stop guard ──────────────────────────────────────────────────
