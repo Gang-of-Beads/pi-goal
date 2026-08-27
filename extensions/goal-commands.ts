@@ -670,7 +670,6 @@ export function registerGoalCommands(core: GoalCore): void {
 		}
 		// Snapshot the selected goal id and focus revision before asking.
 		const target = core.state.goal;
-		const focusToken = core.focusedOperationToken(target.id);
 		// Headless behavior is explicit: guidance without mutation. Clearing
 		// requires an interactive confirmation (follow-up Stage 2).
 		if (!ctx.hasUI) {
@@ -682,11 +681,12 @@ export function registerGoalCommands(core: GoalCore): void {
 			ctx.ui.notify("Goal clear cancelled.", "info");
 			return;
 		}
-		// Reconcile and validate the same focus token after confirmation, then
-		// archive. Cancellation above changes no file, focus entry, ledger
-		// entry, or runtime state.
+		// What must not change across the dialog is which goal is being cleared.
+		// The focus revision also counts session reloads and tree navigation, and
+		// reading those as "the goal changed" turned Clear into a button that had
+		// to be pressed twice.
 		core.reconcileFocusedGoalFromDisk(ctx);
-		if (!core.isFocusedOperationCurrent(focusToken) || !core.state.goal || core.state.goal.id !== target.id) {
+		if (!core.state.goal || core.state.goal.id !== target.id) {
 			ctx.ui.notify("Goal changed while confirming; nothing was cleared.", "warning");
 			return;
 		}

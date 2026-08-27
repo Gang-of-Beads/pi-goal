@@ -318,3 +318,41 @@ function readFileSyncSafe(p: string): string | null {
 		return null;
 	}
 }
+
+/**
+ * Clearing asks for confirmation, and the answer arrives whenever the reader
+ * gets to it. Anything that reloads state in that window - a session reload, a
+ * tree navigation, a checkpoint - bumps the focus revision, and the guard after
+ * the dialog read that as "the goal changed" and cleared nothing. From the
+ * outside that is a button that has to be pressed twice, the second press
+ * landing in a shorter window.
+ *
+ * The guard that matters is which goal is being cleared, and that is checked
+ * against the goal id separately.
+ */
+test("goal-clear survives a state reload while its dialog is open", async () => {
+	const cwd = mkdtempSync(path.join(tmpdir(), "goal-clear-confirm-"));
+	try {
+		const h = createHarness(cwd);
+		(h.ctx as { hasUI: boolean }).hasUI = true;
+		(h.ctx.ui as { confirm: () => Promise<boolean> }).confirm = async () => true;
+		await h.commands.get("goal-direct")!.handler("Ship a small feature", h.ctx);
+		assert.equal(activeGoalFiles(cwd).length, 1, `goal not created: ${h.notifications.join(" | ")}`);
+
+		(h.ctx.ui as { confirm: () => Promise<boolean> }).confirm = async () => {
+			// Whatever reloads state during the dialog - the shape this guards
+			// against is a revision bump, not a different goal.
+			// A reload during the dialog: focus lands back on the same goal, and
+			// only the revision counter has moved.
+			await h.handlers.get("session_start")?.({ cwd }, h.ctx);
+			await h.commands.get("goal-focus")?.handler("", h.ctx);
+			return true;
+		};
+		await h.commands.get("goal-clear")!.handler("", h.ctx);
+
+		assert.equal(activeGoalFiles(cwd).length, 0, `goal not cleared: ${h.notifications.join(" | ")}`);
+		assert.ok(!h.notifications.some((n) => n.includes("Goal changed while confirming")), h.notifications.join(" | "));
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
