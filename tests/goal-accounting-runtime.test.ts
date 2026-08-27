@@ -227,3 +227,26 @@ describe("GoalRuntime checkpoint circuit breaker", () => {
     assert.equal(sent.length, 6, "a goal that keeps changing must keep being driven");
   });
 });
+
+describe("a goal paused between queueing and sending", () => {
+	it("does not send a checkpoint the goal no longer wants", () => {
+		let goal = activeGoal();
+		const { runtime, sent } = makeRuntime({ isActionable: () => true, getGoal: () => goal });
+
+		runtime.queueContinuation(mockCtx(), goal, true);
+		goal = { ...goal, status: "paused" as const };
+		runtime.flushContinuationForTest(mockCtx(), goal.id);
+
+		assert.equal(sent.length, 0, `paused goal received ${String(sent.length)} checkpoints`);
+	});
+
+	it("still sends while the goal is active", () => {
+		const goal = activeGoal();
+		const { runtime, sent } = makeRuntime({ isActionable: () => true, getGoal: () => goal });
+
+		runtime.queueContinuation(mockCtx(), goal, true);
+		runtime.flushContinuationForTest(mockCtx(), goal.id);
+
+		assert.ok(sent.length > 0, "an active goal should still be driven");
+	});
+});

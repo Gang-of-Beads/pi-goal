@@ -189,8 +189,9 @@ export class GoalRuntime {
 			return;
 		}
 		const goal = this.hooks.getGoal();
-		if (!goal || goal.id !== scheduledGoalId) {
+		if (!goal || goal.id !== scheduledGoalId || goal.status !== "active" || !goal.autoContinue) {
 			if (this.continuationQueuedFor === scheduledGoalId) this.continuationQueuedFor = null;
+			this.continuationScheduledFor = null;
 			return;
 		}
 		const revision = goal.revision ?? 0;
