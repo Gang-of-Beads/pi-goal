@@ -48,6 +48,7 @@
     ".tests/goal-stale-continuation-golden.test.ts",
     ".tests/goal-status.test.ts",
     ".tests/goal-surface-baseline.test.ts",
+    ".tests/goal-task-confirmation.test.ts",
     ".tests/goal-task-lifecycle.test.ts",
     ".tests/goal-task-tools.test.ts",
     ".tests/goal-tasks.test.ts",

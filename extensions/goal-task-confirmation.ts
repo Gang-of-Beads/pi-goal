@@ -31,6 +31,21 @@ export interface TaskConfirmationResult {
 	decision: "confirm" | "cancel";
 }
 
+export const TASK_CONFIRMATION_TITLE = "Task list confirmation";
+
+export const TASK_CONFIRMATION_OPTIONS: ReadonlyArray<{ label: string; value: TaskConfirmationResult["decision"]; description: string }> = [
+	{
+		label: "Confirm task list",
+		value: "confirm",
+		description: "Replace the current task list with this structure.",
+	},
+	{
+		label: "Keep current tasks",
+		value: "cancel",
+		description: "Leave the existing task list unchanged.",
+	},
+];
+
 export async function showTaskConfirmation(ctx: ExtensionContext, proposalText: string): Promise<TaskConfirmationResult> {
 	const autoConfirmEnv = process.env.PI_GOAL_AUTO_CONFIRM;
 	if (autoConfirmEnv === "0") {
@@ -41,11 +56,24 @@ export async function showTaskConfirmation(ctx: ExtensionContext, proposalText: 
 		// Headless default, or forced auto-confirm even with a UI.
 		return { decision: "confirm" };
 	}
-	return showTaskListConfirmationDialog(ctx, proposalText);
+	const rendered = await showTaskListConfirmationDialog(ctx, proposalText);
+	if (rendered !== undefined) return rendered;
+	// `ctx.hasUI` reports that a UI context is installed, not that it can render
+	// a TUI component: a host driving pi from a browser keeps `hasUI` true while
+	// `ui.custom` stays the SDK's headless default and resolves to undefined.
+	// The same host implements confirm/select/input, so the decision is asked
+	// there instead of being dereferenced off undefined.
+	return await confirmTaskListWithBasicDialogs(ctx, proposalText);
 }
 
-async function showTaskListConfirmationDialog(ctx: ExtensionContext, proposalText: string): Promise<TaskConfirmationResult> {
-	return await ctx.ui.custom<TaskConfirmationResult>(
+async function confirmTaskListWithBasicDialogs(ctx: ExtensionContext, proposalText: string): Promise<TaskConfirmationResult> {
+	if (typeof ctx.ui.select !== "function") return { decision: "cancel" };
+	const picked = await ctx.ui.select(`${TASK_CONFIRMATION_TITLE}\n\n${proposalText}`, TASK_CONFIRMATION_OPTIONS.map((option) => option.label));
+	return { decision: TASK_CONFIRMATION_OPTIONS.find((option) => option.label === picked)?.value ?? "cancel" };
+}
+
+async function showTaskListConfirmationDialog(ctx: ExtensionContext, proposalText: string): Promise<TaskConfirmationResult | undefined> {
+	return await ctx.ui.custom<TaskConfirmationResult | undefined>(
 		(tui: TUI, theme: Theme, _keybindings: unknown, done: (result: TaskConfirmationResult) => void): Component => {
 			const wasHardwareCursorShown = tui.getShowHardwareCursor();
 			tui.setShowHardwareCursor(false);
@@ -56,18 +84,7 @@ async function showTaskListConfirmationDialog(ctx: ExtensionContext, proposalTex
 			// Default: "Confirm task list" (matches the pre-existing default).
 			let selectedIndex = 0;
 
-			const OPTIONS: Array<{ label: string; value: TaskConfirmationResult["decision"]; description: string }> = [
-				{
-					label: "Confirm task list",
-					value: "confirm",
-					description: "Replace the current task list with this structure.",
-				},
-				{
-					label: "Keep current tasks",
-					value: "cancel",
-					description: "Leave the existing task list unchanged.",
-				},
-			];
+			const OPTIONS = TASK_CONFIRMATION_OPTIONS;
 
 			const BODY_LINES = proposalText.split("\n");
 			const MAX_BODY = 16;
@@ -99,7 +116,7 @@ async function showTaskListConfirmationDialog(ctx: ExtensionContext, proposalTex
 
 					// ── Header ────────────────────────────────────────────────
 					lines.push(accent(`┌${horizLine}┐`));
-					lines.push(line(p + theme.bold("Task list confirmation")));
+					lines.push(line(p + theme.bold(TASK_CONFIRMATION_TITLE)));
 					lines.push(accent(`├${horizLine}┤`));
 
 					// ── Body: the proposed task tree ─────────────────────────
