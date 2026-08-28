@@ -9,6 +9,7 @@
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { asRecord } from "./goal-record.ts";
 import type { GoalCheckpointDetailsV2, GoalRecord } from "./goal-record.ts";
 import { checkpointTriggerPrompt } from "./prompts/goal-prompts.ts";
 import { POST_STOP_ALLOWED_TOOLS } from "./goal-tool-names.ts";
@@ -27,6 +28,62 @@ export const CONTINUATION_IDLE_RETRY_MS = 50;
  * one that a person can see and act on.
  */
 export const MAX_STALLED_CHECKPOINTS = 3;
+
+/**
+ * How many model turns may die in a row before the runtime stops waking the
+ * agent.
+ *
+ * The stalled-checkpoint guard above counts in memory, on this instance. The
+ * instance does not outlive the thing it is guarding against: measured on a
+ * real session, five consecutive checkpoints were written with the same goal
+ * revision *and* the same `checkpointSeq` of 1, which only happens if the
+ * runtime - and with it the counter - was rebuilt between every one of them.
+ * The guard could not fire, so a single unrecoverable model error was re-driven
+ * until something else stopped it.
+ *
+ * A provider error is not always a passing one. `400 invalid_request_error` is
+ * deliberately not retried by the model layer, because sending the same bytes
+ * again gets the same answer; waking the agent to send them again is that retry
+ * by another route, and it costs a request every time.
+ *
+ * So the count comes from the session instead of from memory. The transcript is
+ * the one record that survives a rebuild.
+ */
+export const MAX_CONSECUTIVE_MODEL_ERRORS = 2;
+
+/**
+ * How many model turns at the end of this branch failed, counting back from the
+ * newest.
+ *
+ * Only `message` entries are consulted: a checkpoint is a `custom_message` and
+ * sits between every pair of them, and model/thinking-level changes are not
+ * turns at all. Anything that is not a failed assistant turn - a reply that
+ * worked, a tool result, or a person typing - ends the streak, which is what
+ * makes a human stepping in enough to clear it.
+ */
+export function trailingModelErrorCount(entries: readonly unknown[]): number {
+	let count = 0;
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = asRecord(entries[index]);
+		if (!entry || entry.type !== "message") continue;
+		const message = asRecord(entry.message);
+		if (!message) continue;
+		if (message.role !== "assistant") return count;
+		if (message.stopReason !== "error") return count;
+		count += 1;
+	}
+	return count;
+}
+
+/** The branch this session is on, or nothing when the host cannot supply it. */
+function branchEntries(ctx: ExtensionContext): readonly unknown[] {
+	try {
+		const manager = (ctx as { sessionManager?: { getBranch?: () => readonly unknown[] } }).sessionManager;
+		return manager?.getBranch?.() ?? [];
+	} catch {
+		return [];
+	}
+}
 
 const POST_STOP_ALLOWED = new Set<string>(POST_STOP_ALLOWED_TOOLS);
 
@@ -191,6 +248,14 @@ export class GoalRuntime {
 		const goal = this.hooks.getGoal();
 		if (!goal || goal.id !== scheduledGoalId || goal.status !== "active" || !goal.autoContinue) {
 			if (this.continuationQueuedFor === scheduledGoalId) this.continuationQueuedFor = null;
+			this.continuationScheduledFor = null;
+			return;
+		}
+		// Read before the in-memory counters, because this is the one that still
+		// knows what happened before this runtime existed.
+		const failedTurns = trailingModelErrorCount(branchEntries(ctx));
+		if (failedTurns >= MAX_CONSECUTIVE_MODEL_ERRORS) {
+			this.continuationQueuedFor = null;
 			this.continuationScheduledFor = null;
 			return;
 		}
