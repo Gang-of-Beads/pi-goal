@@ -19,6 +19,26 @@ import { networkErrorBackoffPlan, type NetworkErrorBackoffPlan } from "./network
 export const CONTINUATION_IDLE_RETRY_MS = 50;
 
 /**
+ * How often a continuation that is being held back by active background work
+ * re-probes the in-process registries. The first quiescent probe delivers the
+ * held follow-up; the poll is what re-triggers the injection when work ends.
+ */
+export const BACKGROUND_BUSY_POLL_MS = 2_000;
+
+/**
+ * How long a single queued continuation may be held back by (apparently)
+ * active background work before the runtime falls back to the ordinary send.
+ *
+ * The deferral probes are authoritative in-process registries, but a run can
+ * still be lost there — a husk that never reaches a terminal state. Waiting
+ * forever on such a run would silently stall the goal, so the hold is bounded:
+ * after this long the follow-up goes out through the unchanged guard path and
+ * the user is notified once. A user message also always clears the wait
+ * (before_agent_start cancels queued continuations on user-driven turns).
+ */
+export const MAX_BACKGROUND_DEFERRAL_MS = 15 * 60_000;
+
+/**
  * How many checkpoints may pass without the goal changing before the runtime
  * stops driving it.
  *
@@ -177,6 +197,14 @@ export interface GoalRuntimeHooks {
 	 * Optional so an embedder that only schedules can omit it.
 	 */
 	onGuardStopped?(ctx: ExtensionContext, reason: string): void;
+
+	/**
+	 * Optional authoritative probe: does the session currently have active
+	 * subagent runs or background tasks? Implemented over the in-process event
+	 * bus (extensions/goal-background.ts). When absent, the runtime never
+	 * defers; when it throws, the send proceeds (uncertainty must not stall).
+	 */
+	hasActiveBackgroundWork?(): Promise<boolean>;
 }
 
 /** What the reader is told when a bound stops the loop. */
@@ -191,6 +219,15 @@ export class GoalRuntime {
 	private continuationQueuedFor: string | null = null;
 	private continuationScheduledFor: string | null = null;
 	private continuationTimer: ReturnType<typeof setTimeout> | null = null;
+	/**
+	 * Bumped on every schedule/clear so a callback that already fired (and is
+	 * now awaiting the background-work probe) cannot act on superseded state —
+	 * the await gap must not reopen the double-send race the synchronous path
+	 * never had.
+	 */
+	private continuationEpoch = 0;
+	/** When the current queued continuation first deferred to background work. */
+	private backgroundDeferralSince: number | null = null;
 	private networkErrorRetryGoalId: string | null = null;
 	private networkErrorRetryAttempt = 0;
 	private networkErrorRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -224,11 +261,13 @@ export class GoalRuntime {
 	clearContinuationState(resetNetworkErrorBackoff = true): void {
 		this.clearContinuationTimer();
 		this.continuationQueuedFor = null;
+		this.backgroundDeferralSince = null;
 		if (resetNetworkErrorBackoff) this.clearNetworkErrorBackoff();
 	}
 
 	/** Clear the pending timer but keep the queued marker (used at session shutdown). */
 	clearContinuationTimer(): void {
+		this.continuationEpoch += 1; // in-flight probe waits belong to the cleared schedule
 		if (this.continuationTimer) {
 			clearTimeout(this.continuationTimer);
 			this.continuationTimer = null;
@@ -250,7 +289,8 @@ export class GoalRuntime {
 		if (goal.status !== "active" || !goal.autoContinue) return;
 		const goalId = goal.id;
 		if (!force && this.continuationPendingFor(goalId)) return;
-		this.clearContinuationTimer();
+		this.clearContinuationTimer(); // also bumps the epoch: older fired callbacks abandon
+		const epoch = this.continuationEpoch;
 		let delay = CONTINUATION_IDLE_RETRY_MS;
 		try {
 			delay = ctx.isIdle() && !ctx.hasPendingMessages() ? 0 : CONTINUATION_IDLE_RETRY_MS;
@@ -258,13 +298,13 @@ export class GoalRuntime {
 			return;
 		}
 		this.continuationScheduledFor = goalId;
-		this.continuationTimer = setTimeout(() => this.sendQueuedContinuation(ctx, goalId), delay);
+		this.continuationTimer = setTimeout(() => void this.sendQueuedContinuation(ctx, goalId, epoch), delay);
 		this.continuationTimer.unref?.();
 	}
 
 	/** Deterministic entry point for the scheduled send, so tests need no timers. */
-	flushContinuationForTest(ctx: ExtensionContext, goalId: string): void {
-		this.sendQueuedContinuation(ctx, goalId);
+	flushContinuationForTest(ctx: ExtensionContext, goalId: string): Promise<void> {
+		return this.sendQueuedContinuation(ctx, goalId);
 	}
 
 	/** Cancel a pending continuation for a goal id (e.g. after update/clear/focus change). */
@@ -331,11 +371,13 @@ export class GoalRuntime {
 	 * details are a bounded structured record; before_agent_start injects the
 	 * authoritative full prompt once per turn.
 	 */
-	private sendQueuedContinuation(ctx: ExtensionContext, scheduledGoalId: string): void {
+	private async sendQueuedContinuation(ctx: ExtensionContext, scheduledGoalId: string, epoch: number = this.continuationEpoch): Promise<void> {
+		if (epoch !== this.continuationEpoch) return; // superseded by a newer schedule/clear
 		this.continuationTimer = null;
 		this.continuationScheduledFor = null;
 		if (!this.hooks.isActionable(scheduledGoalId)) {
 			if (this.continuationQueuedFor === scheduledGoalId) this.continuationQueuedFor = null;
+			this.backgroundDeferralSince = null;
 			return;
 		}
 
@@ -344,14 +386,23 @@ export class GoalRuntime {
 			ready = !ctx.hasPendingMessages() && ctx.isIdle();
 		} catch {
 			if (this.continuationQueuedFor === scheduledGoalId) this.continuationQueuedFor = null;
+			this.backgroundDeferralSince = null;
 			return;
 		}
 
 		if (!ready) {
 			this.continuationScheduledFor = scheduledGoalId;
-			this.continuationTimer = setTimeout(() => this.sendQueuedContinuation(ctx, scheduledGoalId), CONTINUATION_IDLE_RETRY_MS);
+			this.continuationTimer = setTimeout(() => void this.sendQueuedContinuation(ctx, scheduledGoalId, epoch), CONTINUATION_IDLE_RETRY_MS);
 			this.continuationTimer.unref?.();
 			return;
+		}
+		// Background-work deferral: with an active subagent run or background
+		// task the follow-up must not interrupt; hold it (poll BACKGROUND_BUSY_POLL_MS)
+		// until the registries report quiescence. Evaluated before the goal/stall
+		// guards below so held polls never consume their budgets.
+		if (this.hooks.hasActiveBackgroundWork) {
+			if (await this.deferWhileBackgroundWorkActive(ctx, scheduledGoalId, epoch)) return;
+			if (epoch !== this.continuationEpoch) return; // superseded while probing
 		}
 		const goal = this.hooks.getGoal();
 		if (!goal || goal.id !== scheduledGoalId || goal.status !== "active" || !goal.autoContinue) {
@@ -405,6 +456,46 @@ export class GoalRuntime {
 			timestamp: Date.now(),
 		};
 		this.hooks.sendFollowUp(checkpointTriggerPrompt(goal.id, goal.status), details as unknown as Record<string, unknown>);
+	}
+
+	/**
+	 * Hold the follow-up while background work is active. Returns true when the
+	 * continuation was rescheduled (still held), false when the send may
+	 * proceed: quiescent registries, a probe that cannot answer, or the
+	 * deferral cap reached (a lost/husk run must not stall the goal forever).
+	 */
+	private async deferWhileBackgroundWorkActive(ctx: ExtensionContext, scheduledGoalId: string, epoch: number): Promise<boolean> {
+		const probe = this.hooks.hasActiveBackgroundWork;
+		if (!probe) return false;
+		let active = false;
+		try {
+			active = await probe();
+		} catch {
+			active = false; // uncertain detection must never stall the goal
+		}
+		if (epoch !== this.continuationEpoch) return true; // superseded while probing
+		if (!active) {
+			this.backgroundDeferralSince = null;
+			return false;
+		}
+		const since = this.backgroundDeferralSince ?? Date.now();
+		if (Date.now() - since >= MAX_BACKGROUND_DEFERRAL_MS) {
+			this.backgroundDeferralSince = null;
+			try {
+				ctx.ui.notify(
+					`Goal continuation deferred ${Math.round(MAX_BACKGROUND_DEFERRAL_MS / 60_000)}m by active background work; resuming the goal now.`,
+					"warning",
+				);
+			} catch {
+				// Notify is best-effort; the fallback send itself must not fail.
+			}
+			return false;
+		}
+		this.backgroundDeferralSince = since;
+		this.continuationScheduledFor = scheduledGoalId;
+		this.continuationTimer = setTimeout(() => void this.sendQueuedContinuation(ctx, scheduledGoalId, epoch), BACKGROUND_BUSY_POLL_MS);
+		this.continuationTimer.unref?.();
+		return true;
 	}
 
 	// ── turn-stop guard ──────────────────────────────────────────────────

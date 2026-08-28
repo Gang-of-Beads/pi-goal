@@ -309,3 +309,33 @@ and must be reversed or repurposed, not completed.
   `/goal-status`, persistent draft state, and per-draft auditor selection;
   it also specifies compact-contract replacements for pause, abandonment,
   tweak ownership, and completion claims.
+
+## 2026-08-29 — Continuation defers to active background work
+
+Owner request: when the session has active subagent runs or background
+tasks, the goal continuation must not inject; it waits for quiescence.
+
+- Added `extensions/goal-background.ts`: authoritative in-process probes over
+  the shared extension event bus (`pi.events`) — pi-subagents RPC `status`
+  (`fleet.totalActive`, session-scoped foreground children + async jobs) and
+  pi-background-tasks `status` operation (`tasks[].status === "running"`).
+  Direct registries, not transcript inference; an unreachable or erroring
+  authority counts as quiescent so a missing sibling can never stall a goal.
+- `GoalRuntime` gained an optional `hasActiveBackgroundWork` hook and holds a
+  ready follow-up while the probe confirms activity, re-probing every 2s
+  (`BACKGROUND_BUSY_POLL_MS`). Held polls run before the goal/stall guards, so
+  deferrals never consume the stalled-checkpoint or model-error budgets.
+- A monotonic continuation epoch guards the new await gap so a fired callback
+  superseded by a newer schedule/clear cannot act on stale state (no
+  double-send race).
+- Bounded fallback (`MAX_BACKGROUND_DEFERRAL_MS`, 15m): a lost/husk run that
+  never terminates cannot hold the goal forever — after the cap the follow-up
+  goes out through the unchanged guard path with one user notification.
+- Wired in goal-state.ts; all existing guards (trailingModelErrorCount,
+  stalled checkpoints, network-error backoff, dedup, focus tools) untouched.
+- Tests: tests/goal-background-deferral.test.ts pins both wire shapes, the
+  hold/deliver cycle, the no-stall fallbacks, the cap, and the end-to-end
+  extension behavior; mutation check (deferral disabled) fails 4 of them.
+- Drive-by: fixed the pre-existing `createGoal("keep going")` type error in
+  tests/goal-failed-turn-streak.test.ts (runtime-equivalent config call) and
+  regenerated the test manifest (it was also missing that file at HEAD).

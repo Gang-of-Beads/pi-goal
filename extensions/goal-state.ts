@@ -33,6 +33,7 @@ import { GoalService } from "./goal-service.ts";
 import { readGoalLedger } from "./goal-ledger.ts";
 import { GoalAccounting } from "./goal-accounting.ts";
 import { GoalRuntime } from "./goal-runtime.ts";
+import { probeActiveBackgroundWork } from "./goal-background.ts";
 import {
 	focusedGoalFromPool,
 	openGoalsFromPool,
@@ -277,6 +278,9 @@ export function createGoalCore(
 		getGoal: () => state.goal,
 		isActionable: (goalId) => isActionableContinuationGoal(goalId),
 		onGuardStopped: (ctx, reason) => { blockActiveGoalOnGuard(ctx, reason); },
+		// Hold the continuation while a subagent run or background task is
+		// active: both registries live in this process and answer over pi.events.
+		hasActiveBackgroundWork: () => probeActiveBackgroundWork(pi),
 	});
 	const accounting = new GoalAccounting();
 
