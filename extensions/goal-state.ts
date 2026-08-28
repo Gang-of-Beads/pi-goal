@@ -121,6 +121,8 @@ export interface GoalCore {
 	archiveCurrentGoal(ctx: ExtensionContext, reason: StopReason | undefined): GoalRecord | null;
 	stopActiveGoal(status: Exclude<GoalStatus, "active">, reason: StopReason | undefined, ctx: ExtensionContext): void;
 	pauseActiveGoal(ctx: ExtensionContext): void;
+	/** Stop a goal because a runtime safety bound tripped, audibly and on disk. */
+	blockActiveGoalOnGuard(ctx: ExtensionContext, reason: string): void;
 	/** §auditor-toggle: flip the focused goal's persisted per-goal skipAuditor and record the ledger event. */
 	toggleGoalAuditor(ctx: ExtensionContext): void;
 	queueContinuation(ctx: ExtensionContext, force?: boolean): void;
@@ -274,6 +276,7 @@ export function createGoalCore(
 		},
 		getGoal: () => state.goal,
 		isActionable: (goalId) => isActionableContinuationGoal(goalId),
+		onGuardStopped: (ctx, reason) => { blockActiveGoalOnGuard(ctx, reason); },
 	});
 	const accounting = new GoalAccounting();
 
@@ -788,16 +791,35 @@ export function createGoalCore(
 			reconcile: false,
 			refreshFromDisk: true,
 			mutate: (g) => ({ ...g, status, stopReason: reason, updatedAt: nowIso() }),
-			ledger: (written) => status === "paused"
-				? [{
-					type: "goal_paused",
-					goalId: written.id,
-					reason: reason ?? "unknown",
-					suggestedAction: written.pauseSuggestedAction,
-					status,
-					at: written.updatedAt,
-				}]
-				: [],
+			ledger: (written) => {
+				if (status === "paused") {
+					return [{
+						type: "goal_paused" as const,
+						goalId: written.id,
+						reason: reason ?? "unknown",
+						suggestedAction: written.pauseSuggestedAction,
+						status,
+						at: written.updatedAt,
+					}];
+				}
+				// A goal stopped by one of the runtime's own safety bounds used to
+				// leave no trace at all: no event, and a file still reading
+				// "active". Anything reading the ledger or the goal file then
+				// reported work in progress on a goal nothing was driving.
+				if (status === "blocked") {
+					return [{
+						type: "goal_blocked" as const,
+						goalId: written.id,
+						reason: written.pauseReason ?? "blocked",
+						// The ledger distinguishes a goal the model declared blocked
+						// from one a safety bound stopped; only the latter reaches
+						// here without a stop reason of its own.
+						source: reason === undefined ? "system" as const : "agent" as const,
+						at: written.updatedAt,
+					}];
+				}
+				return [];
+			},
 		});
 		if (result.ok) {
 			// setGoal() glue: a stopped goal can no longer queue continuations or
@@ -816,6 +838,26 @@ export function createGoalCore(
 		state.goal = { ...state.goal, autoContinue: false, pauseReason: undefined, pauseSuggestedAction: undefined };
 		stopActiveGoal("paused", "user", ctx);
 		ctx.ui.notify("Goal paused.", "info");
+	}
+
+	/**
+	 * Stop a goal because one of the runtime's own safety bounds tripped.
+	 *
+	 * These bounds used to return quietly: the loop stopped, but nothing was
+	 * notified, no ledger event was written, and the goal file still said
+	 * "active". A reader of that file - the browser panel, or the next session -
+	 * saw a goal in progress that nothing was driving, with the last task it had
+	 * reported still showing as current.
+	 *
+	 * `blocked` is the status the plugin already uses for "stopped, waiting for a
+	 * person", so a stopped goal now lands where /goal-resume and the dashboard
+	 * already know how to find it.
+	 */
+	function blockActiveGoalOnGuard(ctx: ExtensionContext, reason: string): void {
+		if (!state.goal || state.goal.status !== "active") return;
+		state.goal = { ...state.goal, autoContinue: false, pauseReason: reason, pauseSuggestedAction: undefined };
+		stopActiveGoal("blocked", undefined, ctx);
+		ctx.ui.notify(`Goal stopped: ${reason}`, "warning");
 	}
 
 	/**
@@ -1034,6 +1076,7 @@ export function createGoalCore(
 		archiveCurrentGoal,
 		stopActiveGoal,
 		pauseActiveGoal,
+		blockActiveGoalOnGuard,
 		toggleGoalAuditor,
 		queueContinuation,
 		flushGoalTransaction,

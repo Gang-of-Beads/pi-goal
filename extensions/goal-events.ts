@@ -22,6 +22,7 @@ import { asRecord, nowIso, type AssistantMessageLike, type GoalRecord } from "./
 import { goalSelectorLabel } from "./goal-pool.ts";
 import { invalidateGoalPoolCache } from "./storage/goal-files.ts";
 import { checkpointTriggerPrompt } from "./prompts/goal-prompts.ts";
+import { GUARD_STOP_REASONS } from "./goal-runtime.ts";
 import { consumeOracleFollowupMarker, hasPendingOracleAdviceForFocusedGoal } from "./goal-oracle.ts";import {
 	goalPrompt,
 	staleContinuationPrompt,
@@ -541,10 +542,10 @@ export function registerGoalEvents(core: GoalCore): void {
 			);
 			return;
 		}
-		ctx.ui.notify(
-			"Provider network errors persisted after all recovery attempts. The goal remains active; resume it when the provider is healthy.",
-			"warning",
-		);
+		// Leaving it active was the bug: nothing was driving the goal any more,
+		// but its file still said work was under way, so the browser panel and the
+		// next session both reported progress on a loop that had stopped.
+		core.blockActiveGoalOnGuard(ctx, GUARD_STOP_REASONS.networkRecoveryExhausted);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {

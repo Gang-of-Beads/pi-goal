@@ -82,7 +82,7 @@ describe("trailingModelErrorCount", () => {
 });
 
 function activeGoal(): GoalRecord {
-	const goal = createGoal("keep going");
+	const goal = createGoal({ objective: "keep going", autoContinue: true, sisyphus: false });
 	return { ...goal, id: "g1", status: "active", autoContinue: true, revision: 378 };
 }
 

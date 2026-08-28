@@ -13,6 +13,7 @@ import { asRecord } from "./goal-record.ts";
 import type { GoalCheckpointDetailsV2, GoalRecord } from "./goal-record.ts";
 import { checkpointTriggerPrompt } from "./prompts/goal-prompts.ts";
 import { POST_STOP_ALLOWED_TOOLS } from "./goal-tool-names.ts";
+import { isNetworkErrorAssistantMessage } from "./goal-format.ts";
 import { networkErrorBackoffPlan, type NetworkErrorBackoffPlan } from "./network-error-backoff.ts";
 
 export const CONTINUATION_IDLE_RETRY_MS = 50;
@@ -75,6 +76,36 @@ export function trailingModelErrorCount(entries: readonly unknown[]): number {
 	return count;
 }
 
+/**
+ * How many of the turns at the end of this branch died of a network error,
+ * counting back from the newest.
+ *
+ * The backoff ladder is bounded at five attempts, but it counted them on the
+ * runtime instance, and that instance is rebuilt between checkpoints on this
+ * host. Every rebuild put the count back to zero, so `networkErrorBackoffPlan`
+ * was asked for attempt 1 forever: measured with a fresh runtime per attempt,
+ * eight consecutive calls all returned a 5s delay instead of climbing
+ * 5/10/20/40/80 and then stopping. An unavailable provider was polled every
+ * five seconds without end.
+ *
+ * Counting from the branch makes the ladder independent of how often the
+ * runtime is rebuilt, exactly as `trailingModelErrorCount` does for the
+ * model-error guard. Both read the same durable record so the two guards can
+ * never disagree about what just happened.
+ */
+export function trailingNetworkErrorCount(entries: readonly unknown[]): number {
+	let count = 0;
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = asRecord(entries[index]);
+		if (!entry || entry.type !== "message") continue;
+		const message = asRecord(entry.message);
+		if (!message) continue;
+		if (!isNetworkErrorAssistantMessage(message)) return count;
+		count += 1;
+	}
+	return count;
+}
+
 /** The branch this session is on, or nothing when the host cannot supply it. */
 function branchEntries(ctx: ExtensionContext): readonly unknown[] {
 	try {
@@ -94,7 +125,20 @@ export interface GoalRuntimeHooks {
 	getGoal(): GoalRecord | null;
 	/** Whether a checkpointed goal id is still actionable (active + autoContinue). */
 	isActionable(goalId: string | null | undefined): boolean;
+	/**
+	 * Report that a safety bound stopped the loop: notify, record it, and move
+	 * the goal off "active" so its file stops claiming work is under way.
+	 * Optional so an embedder that only schedules can omit it.
+	 */
+	onGuardStopped?(ctx: ExtensionContext, reason: string): void;
 }
+
+/** What the reader is told when a bound stops the loop. */
+export const GUARD_STOP_REASONS = {
+	modelErrors: `the last ${String(MAX_CONSECUTIVE_MODEL_ERRORS)} model turns failed, so continuing would repeat a request the provider already refused`,
+	stalledCheckpoints: `${String(MAX_STALLED_CHECKPOINTS)} checkpoints passed without the goal changing`,
+	networkRecoveryExhausted: "provider network errors outlasted every bounded recovery attempt",
+} as const;
 
 export class GoalRuntime {
 	// ── continuation scheduling ──────────────────────────────────────────
@@ -186,8 +230,13 @@ export class GoalRuntime {
 
 	/**
 	 * Schedule the next bounded recovery after Pi's built-in provider retries
-	 * have failed. The counter stays in memory and is cleared on a successful
-	 * turn or any user-owned cancellation path.
+	 * have failed.
+	 *
+	 * Which attempt this is comes from the branch rather than from this
+	 * instance: the instance is rebuilt between checkpoints, and counting on it
+	 * restarted the ladder at 5s forever. The in-memory counter is still kept as
+	 * the floor, so a host that cannot supply a branch degrades to the old
+	 * behaviour within one instance rather than losing the bound entirely.
 	 */
 	scheduleNetworkErrorRetry(ctx: ExtensionContext, goal: GoalRecord): NetworkErrorBackoffPlan | null {
 		if (goal.status !== "active" || !goal.autoContinue || this.networkErrorRetryTimer) return null;
@@ -195,7 +244,11 @@ export class GoalRuntime {
 			this.networkErrorRetryGoalId = goal.id;
 			this.networkErrorRetryAttempt = 0;
 		}
-		const plan = networkErrorBackoffPlan(this.networkErrorRetryAttempt + 1);
+		// The failure that triggered this call is already on the branch, so N
+		// trailing errors means N failures have happened and this is recovery N.
+		const attemptsOnBranch = trailingNetworkErrorCount(branchEntries(ctx));
+		const nextAttempt = Math.max(this.networkErrorRetryAttempt + 1, attemptsOnBranch);
+		const plan = networkErrorBackoffPlan(nextAttempt);
 		if (!plan) return null;
 		this.networkErrorRetryAttempt = plan.attempt;
 		this.networkErrorRetryTimer = setTimeout(() => {
@@ -207,6 +260,15 @@ export class GoalRuntime {
 		}, plan.delayMs);
 		this.networkErrorRetryTimer.unref?.();
 		return plan;
+	}
+
+	/**
+	 * Drop only the pending timer, keeping the attempt count. Lets a test walk
+	 * the ladder without waiting out 5s..80s of real delays.
+	 */
+	clearNetworkErrorRetryTimerForTest(): void {
+		if (this.networkErrorRetryTimer) clearTimeout(this.networkErrorRetryTimer);
+		this.networkErrorRetryTimer = null;
 	}
 
 	/** Cancel and forget all goal-level network-error recovery state. */
@@ -257,6 +319,7 @@ export class GoalRuntime {
 		if (failedTurns >= MAX_CONSECUTIVE_MODEL_ERRORS) {
 			this.continuationQueuedFor = null;
 			this.continuationScheduledFor = null;
+			this.hooks.onGuardStopped?.(ctx, GUARD_STOP_REASONS.modelErrors);
 			return;
 		}
 		const revision = goal.revision ?? 0;
@@ -268,6 +331,7 @@ export class GoalRuntime {
 		}
 		if (this.stalledCheckpoints >= MAX_STALLED_CHECKPOINTS) {
 			this.continuationQueuedFor = null;
+			this.hooks.onGuardStopped?.(ctx, GUARD_STOP_REASONS.stalledCheckpoints);
 			return;
 		}
 		this.checkpointSeq += 1;
