@@ -13,7 +13,7 @@ import {
 	isToolUseAssistantMessage,
 } from "./goal-format.ts";
 import { buildCompactionSummary, buildPostCompactionGoalDelta } from "./goal-compaction.ts";
-import { latestAuditorResultForGoal, loadLedgerState, readGoalLedger, invalidateGoalLedgerCache } from "./goal-ledger.ts";
+import { focusLostToAnotherSession, latestAuditorResultForGoal, loadLedgerState, readGoalLedger, invalidateGoalLedgerCache } from "./goal-ledger.ts";
 import { shouldArmPostCompactReminder, shouldInjectPostCompactReminder } from "./goal-policy.ts";
 import { formatTokenValue } from "./goal-core.ts";
 import { loadGoalSettings, invalidateGoalSettingsCache } from "./goal-settings.ts";
@@ -91,6 +91,34 @@ export function compactGoalCheckpointContext(
  * agent_end, agent_settled, session_shutdown). All state flows through the
  * GoalCore.
  */
+/**
+ * Drop this session's focus when another session has taken the same goal.
+ *
+ * Focus is meant to be exclusive but nothing enforced it: two sessions could
+ * each hold the same goal and both drive it, doubling the work and the cost.
+ * The ledger already decides the winner - `goal_focused` bumps a monotonic
+ * generation - so the loser only has to notice, which it can do on the read it
+ * already performs each turn.
+ *
+ * Only the ledger's own verdict is acted on. An unreadable ledger, or a goal it
+ * has not recorded yet, leaves focus alone rather than dropping work on a
+ * guess.
+ */
+function releaseFocusTakenByAnotherSession(core: GoalCore, ctx: ExtensionContext): void {
+	const heldGoalId = core.focusedGoalId;
+	if (!heldGoalId) return;
+	let lost: boolean;
+	try {
+		lost = focusLostToAnotherSession(loadLedgerState(ctx).state, heldGoalId);
+	} catch {
+		return;
+	}
+	if (!lost) return;
+	core.setFocusedGoalId(null, ctx, "unfocused", { recordLedger: false });
+	core.runtime.setCheckpoint(null);
+	ctx.ui.notify(`Another session took goal ${heldGoalId}; this session no longer holds it.`, "info");
+}
+
 export function registerGoalEvents(core: GoalCore): void {
 	const { pi } = core;
 	let continuationAfterSettleFor: string | null = null;
@@ -105,6 +133,10 @@ export function registerGoalEvents(core: GoalCore): void {
 	pi.on("turn_start", async (_event, ctx) => {
 		// Per-turn flag resets (#4 + C9 fix).
 		core.advanceTurnSeq();
+		// Focus is exclusive, and the ledger is where that is settled: another
+		// session focusing this goal bumped the generation past ours. Without this
+		// read both sessions keep driving the same goal, each unaware of the other.
+		releaseFocusTakenByAnotherSession(core, ctx);
 		core.goalWorkToolCalledThisTurn = false;
 		core.beginAccounting();
 		core.goalService.beginTurn(ctx, core.focusedGoalId); // P1-3 transaction buffer

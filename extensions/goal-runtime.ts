@@ -106,6 +106,52 @@ export function trailingNetworkErrorCount(entries: readonly unknown[]): number {
 	return count;
 }
 
+/**
+ * The newest checkpoint this goal wrote, read back off the branch.
+ *
+ * A checkpoint is a `custom_message` carrying v2 details, which is how the loop
+ * records that it asked the agent for a step. Reading it back is what lets a
+ * runtime answer "did I already ask for this" without trusting memory that a
+ * rebuild wiped.
+ */
+export function latestCheckpointForGoal(entries: readonly unknown[], goalId: string): GoalCheckpointDetailsV2 | undefined {
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = asRecord(entries[index]);
+		if (!entry || entry.type !== "custom_message") continue;
+		const details = asRecord(entry.details);
+		if (!details || details.kind !== "checkpoint" || details.goalId !== goalId) continue;
+		return details as unknown as GoalCheckpointDetailsV2;
+	}
+	return undefined;
+}
+
+/**
+ * Whether this goal's newest checkpoint is still waiting for an answer.
+ *
+ * The dedup markers live on the runtime instance, and that instance is rebuilt
+ * between checkpoints on this host: after a rebuild `continuationPendingFor()`
+ * reports false about a continuation that is genuinely in flight, so the loop
+ * queues a second one and the turn is paid for twice. Measured with two
+ * runtimes over one outstanding ask, the checkpoint went out twice.
+ *
+ * A turn following the checkpoint is the answer, whoever produced it — the
+ * agent taking the step, or a person typing. Only an unanswered checkpoint
+ * blocks, so the ordinary way forward still clears it.
+ */
+export function trailingCheckpointWithoutTurn(entries: readonly unknown[], goalId: string): boolean {
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = asRecord(entries[index]);
+		if (!entry) continue;
+		if (entry.type === "message") return false;
+		if (entry.type !== "custom_message") continue;
+		const details = asRecord(entry.details);
+		if (!details || details.kind !== "checkpoint") continue;
+		if (details.goalId !== goalId) return false;
+		return true;
+	}
+	return false;
+}
+
 /** The branch this session is on, or nothing when the host cannot supply it. */
 function branchEntries(ctx: ExtensionContext): readonly unknown[] {
 	try {
@@ -313,9 +359,18 @@ export class GoalRuntime {
 			this.continuationScheduledFor = null;
 			return;
 		}
+		const branch = branchEntries(ctx);
+		// The dedup markers on this instance say nothing about a checkpoint an
+		// earlier instance sent. An unanswered checkpoint on the branch does, and
+		// asking twice for one step pays for the turn twice.
+		if (trailingCheckpointWithoutTurn(branch, scheduledGoalId)) {
+			this.continuationQueuedFor = scheduledGoalId;
+			this.continuationScheduledFor = null;
+			return;
+		}
 		// Read before the in-memory counters, because this is the one that still
 		// knows what happened before this runtime existed.
-		const failedTurns = trailingModelErrorCount(branchEntries(ctx));
+		const failedTurns = trailingModelErrorCount(branch);
 		if (failedTurns >= MAX_CONSECUTIVE_MODEL_ERRORS) {
 			this.continuationQueuedFor = null;
 			this.continuationScheduledFor = null;
@@ -334,7 +389,11 @@ export class GoalRuntime {
 			this.hooks.onGuardStopped?.(ctx, GUARD_STOP_REASONS.stalledCheckpoints);
 			return;
 		}
-		this.checkpointSeq += 1;
+		// Continue the sequence the branch already carries rather than this
+		// instance's counter: five checkpoints all numbered 1 is what proved the
+		// rebuild, and a sequence that restarts cannot serve as evidence again.
+		const lastSeq = latestCheckpointForGoal(branch, goal.id)?.checkpointSeq ?? 0;
+		this.checkpointSeq = Math.max(this.checkpointSeq, lastSeq) + 1;
 		this.continuationQueuedFor = goal.id;
 		const details: GoalCheckpointDetailsV2 = {
 			version: 2,

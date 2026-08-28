@@ -14,6 +14,7 @@ import { sisyphusStepProgress } from "./goal-policy.ts";
 import { deriveTasksFromObjective } from "./goal-task-derive.ts";
 import { nowIso, type GoalRecord, type GoalTask, validateTokenBudgetInput } from "./goal-record.ts";
 import type { GoalCore } from "./goal-state.ts";
+import { FOCUS_GOAL_TOOL_NAME, UNFOCUS_GOAL_TOOL_NAME } from "./goal-tool-names.ts";
 import { promptProfile } from "./prompts/goal-prompts.ts";
 import {
 	armOracleAdvice,
@@ -597,6 +598,89 @@ pi.registerTool(defineTool({
 	},
 	renderCall(args, theme) {
 		return new Text(theme.fg("toolTitle", "update_goal ") + theme.fg("muted", args?.status ?? ""), 0, 0);
+	},
+	renderResult(result, _options, theme) {
+		return renderGoalResult(result, _options, theme);
+	},
+}));
+
+pi.registerTool(defineTool({
+	name: FOCUS_GOAL_TOOL_NAME,
+	label: "Focus Goal",
+	description: "Focus an existing open goal in this session, so goal work applies to it. Focus is exclusive: any other session holding the same goal loses it.",
+	promptSnippet: "Take an existing open goal as this session's focus.",
+	promptGuidelines: [
+		"Focus an existing goal instead of calling create_goal when the work is already described by an open goal - creating a second one splits the same work across two records.",
+	],
+	parameters: Type.Object({
+		goal_id: Type.String({ description: "Id of the open goal to focus, as reported by get_goal." }),
+	}, { additionalProperties: false }),
+	async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+		const goalId = ((_params ?? {}) as { goal_id?: string }).goal_id?.trim();
+		if (!goalId) {
+			return {
+				content: [{ type: "text", text: "No goal_id given. Call get_goal to see which goals are open." }],
+				details: goalDetails(core.state.goal),
+			};
+		}
+		if (core.focusedGoalId === goalId) {
+			return {
+				content: [{ type: "text", text: `Already focused on goal ${goalId}.` }],
+				details: goalDetails(core.state.goal),
+			};
+		}
+		const target = core.openGoals().find((goal) => goal.id === goalId);
+		if (!target) {
+			const open = core.openGoals();
+			const known = open.length > 0
+				? `Open goals: ${open.map((goal) => goal.id).join(", ")}.`
+				: "No goals are open.";
+			return {
+				content: [{ type: "text", text: `No open goal ${goalId}. ${known}` }],
+				details: goalDetails(core.state.goal),
+			};
+		}
+		core.setFocusedGoalId(target.id, ctx, "selected");
+		core.armFocusedContinuation(ctx);
+		return {
+			content: [{ type: "text", text: `Focused goal ${target.id}: ${truncateText(target.objective, 160)}` }],
+			details: goalDetails(core.state.goal),
+		};
+	},
+	renderCall(args, theme) {
+		return new Text(theme.fg("toolTitle", "focus_goal ") + theme.fg("muted", args?.goal_id ?? ""), 0, 0);
+	},
+	renderResult(result, _options, theme) {
+		return renderGoalResult(result, _options, theme);
+	},
+}));
+
+pi.registerTool(defineTool({
+	name: UNFOCUS_GOAL_TOOL_NAME,
+	label: "Unfocus Goal",
+	description: "Stop focusing the current goal in this session. The goal stays open in .pi/goals and is not archived or abandoned.",
+	promptSnippet: "Release this session's goal focus without ending the goal.",
+	promptGuidelines: [
+		"Unfocus when this session should stop driving the goal but the goal itself is not finished - it is not a way to end a goal, which only update_goal or the user can do.",
+	],
+	parameters: Type.Object({}, { additionalProperties: false }),
+	async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+		const current = core.state.goal;
+		if (!current) {
+			return {
+				content: [{ type: "text", text: "No goal is focused in this session." }],
+				details: goalDetails(null),
+			};
+		}
+		core.setFocusedGoalId(null, ctx, "unfocused");
+		core.runtime.setCheckpoint(null);
+		return {
+			content: [{ type: "text", text: `Goal unfocused for this session. It remains open in .pi/goals: ${current.id}` }],
+			details: goalDetails(core.state.goal),
+		};
+	},
+	renderCall(_args, theme) {
+		return new Text(theme.fg("toolTitle", "unfocus_goal"), 0, 0);
 	},
 	renderResult(result, _options, theme) {
 		return renderGoalResult(result, _options, theme);

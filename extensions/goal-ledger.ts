@@ -65,6 +65,25 @@ export interface ReconstructedLedgerState {
   terminalGoals: Map<string, ReconstructedGoalState>;
 }
 
+/**
+ * Whether another session has taken this goal since we focused it.
+ *
+ * Focus is exclusive but there is no lock: two sessions can each believe they
+ * hold the same goal, and both will drive it. The ledger already settles the
+ * question - `goal_focused` bumps a monotonic generation and records it for the
+ * goal, so the newest focus wins by construction. `latestFocus` is that
+ * comparison already materialized on the reconstructed state.
+ *
+ * A goal the ledger has never heard of is not evidence of a loss: a focus that
+ * has not been read back yet, or a ledger that could not be read at all, must
+ * not silently drop the session's own focus.
+ */
+export function focusLostToAnotherSession(state: ReconstructedLedgerState, goalId: string): boolean {
+  const known = state.goals.get(goalId) ?? state.terminalGoals.get(goalId);
+  if (!known) return false;
+  return known.latestFocus !== true;
+}
+
 function safeGoalId(value: string): string {
   return safeIdPart(value);
 }

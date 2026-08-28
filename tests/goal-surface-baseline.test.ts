@@ -57,15 +57,21 @@ function createRecordingPi() {
 // ── The pinned baseline ──────────────────────────────────────────────────────
 
 /**
- * The five goal tools registered today (registration order, which is also the
- * order pi exposes them in the model tool list). All five are registered from
- * the split tool modules (goal-core-tools.ts + goal-task-tools.ts) via the
- * goal-tools.ts composition installer.
+ * The goal tools registered today (registration order, which is also the order
+ * pi exposes them in the model tool list). All are registered from the split
+ * tool modules (goal-core-tools.ts + goal-task-tools.ts) via the goal-tools.ts
+ * composition installer.
+ *
+ * focus_goal/unfocus_goal joined the execution set so the agent can take an
+ * existing goal; before them focus was reachable only through /goal-focus, and
+ * an agent with no focus could only create a competing goal.
  */
 const EXPECTED_REGISTERED_TOOLS = [
 	"get_goal",
 	"create_goal",
 	"update_goal",
+	"focus_goal",
+	"unfocus_goal",
 	"set_goal_tasks",
 	"update_goal_task",
 	"goal_question",
@@ -121,13 +127,13 @@ test("baseline: no duplicate tool or command registrations", () => {
 	assert.equal(new Set(registeredCommands).size, registeredCommands.length);
 });
 
-test("baseline: execution profiles remain three/five tools and drafting is separate", () => {
+test("baseline: execution profiles stay fixed and drafting is separate", () => {
 	assert.deepEqual(FIVE_GOAL_TOOLS, [
-		"create_goal", "get_goal", "update_goal",
+		"create_goal", "get_goal", "update_goal", "focus_goal", "unfocus_goal",
 		"set_goal_tasks", "update_goal_task",
 	]);
 	assert.deepEqual(CORE_GOAL_TOOLS, [
-		"create_goal", "get_goal", "update_goal",
+		"create_goal", "get_goal", "update_goal", "focus_goal", "unfocus_goal",
 	]);
 	assert.deepEqual(DRAFTING_GOAL_TOOLS, [
 		"goal_question", "goal_questionnaire", "propose_goal_draft",

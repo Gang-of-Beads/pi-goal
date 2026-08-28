@@ -80,9 +80,12 @@ function testFixture() {
 	return { cwd, goal: written, mockCtx, cleanup };
 }
 
-// Fixed profiles (Stage 2). Lifecycle state never changes these.
-const FIVE_GOAL_TOOLS = ["create_goal", "get_goal", "update_goal", "set_goal_tasks", "update_goal_task"];
-const CORE_GOAL_TOOLS = ["create_goal", "get_goal", "update_goal"];
+// Fixed profiles (Stage 2), spelled out here rather than imported so this suite
+// pins the surface independently of the constants it is checking. Lifecycle
+// state never changes these; focus control is part of the execution set because
+// taking an existing goal must not require a user slash command.
+const FIVE_GOAL_TOOLS = ["create_goal", "get_goal", "update_goal", "focus_goal", "unfocus_goal", "set_goal_tasks", "update_goal_task"];
+const CORE_GOAL_TOOLS = ["create_goal", "get_goal", "update_goal", "focus_goal", "unfocus_goal"];
 
 // Arbitrary host tool seeds: profile installation must never touch these.
 const HOST_SEED_A = ["read", "bash", "edit", "write"];

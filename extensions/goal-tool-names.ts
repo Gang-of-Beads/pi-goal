@@ -1,14 +1,29 @@
 export const CREATE_GOAL_TOOL_NAME = "create_goal";
 export const GET_GOAL_TOOL_NAME = "get_goal";
 export const UPDATE_GOAL_TOOL_NAME = "update_goal";
+export const FOCUS_GOAL_TOOL_NAME = "focus_goal";
+export const UNFOCUS_GOAL_TOOL_NAME = "unfocus_goal";
 export const SET_GOAL_TASKS_TOOL_NAME = "set_goal_tasks";
 export const UPDATE_GOAL_TASK_TOOL_NAME = "update_goal_task";
 export const QUESTION_TOOL_NAME = "goal_question";
 export const QUESTIONNAIRE_TOOL_NAME = "goal_questionnaire";
 export const PROPOSE_DRAFT_TOOL_NAME = "propose_goal_draft";
 
-/** The stable core model surface: three tools, installed without phase-dependent sync. */
-export const CORE_GOAL_TOOL_NAMES = [CREATE_GOAL_TOOL_NAME, GET_GOAL_TOOL_NAME, UPDATE_GOAL_TOOL_NAME] as const;
+/**
+ * The stable core model surface, installed without phase-dependent sync.
+ *
+ * Focus used to be reachable only through /goal-focus, so an agent holding no
+ * focus could not take an existing goal - its only move was create_goal, which
+ * adds a second open goal instead of picking up the one already there. The
+ * profile is still fixed; only its membership changed.
+ */
+export const CORE_GOAL_TOOL_NAMES = [
+	CREATE_GOAL_TOOL_NAME,
+	GET_GOAL_TOOL_NAME,
+	UPDATE_GOAL_TOOL_NAME,
+	FOCUS_GOAL_TOOL_NAME,
+	UNFOCUS_GOAL_TOOL_NAME,
+] as const;
 
 /** The two consolidated task tools advertised when tasks are enabled. */
 export const TASK_TOOL_NAMES = [SET_GOAL_TASKS_TOOL_NAME, UPDATE_GOAL_TASK_TOOL_NAME] as const;

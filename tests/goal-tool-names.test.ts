@@ -8,6 +8,8 @@ import {
 	CREATE_GOAL_TOOL_NAME,
 	DRAFTING_GOAL_TOOLS,
 	FIVE_GOAL_TOOLS,
+	FOCUS_GOAL_TOOL_NAME,
+	UNFOCUS_GOAL_TOOL_NAME,
 	GET_GOAL_TOOL_NAME,
 	GOAL_PROGRESS_TOOL_NAMES,
 	GOAL_WORK_TOOL_NAMES,
@@ -21,7 +23,12 @@ import {
 	UPDATE_GOAL_TOOL_NAME,
 } from "../extensions/goal-tool-names.ts";
 
-const CORE = ["create_goal", "get_goal", "update_goal"];
+// The steady execution surface. Focus control joined it because focus was
+// otherwise a user-only capability: an agent holding no goal could not take an
+// existing one, and create_goal - its only other move - adds a second open goal
+// describing the same work. The profile stays fixed; what changed is its
+// membership, not whether it varies by lifecycle phase.
+const CORE = ["create_goal", "get_goal", "update_goal", "focus_goal", "unfocus_goal"];
 
 // Drafting tools belong to the separate transient user-started draft profile,
 // never to the steady three/five execution surface.
@@ -33,23 +40,25 @@ const REMOVED_STEADY = [
 	"complete_task", "skip_task", "complete_goal", "pause_goal",
 ];
 
-test("the five public tool names are preserved", () => {
+test("the public tool names are preserved", () => {
 	assert.equal(CREATE_GOAL_TOOL_NAME, "create_goal");
 	assert.equal(GET_GOAL_TOOL_NAME, "get_goal");
 	assert.equal(UPDATE_GOAL_TOOL_NAME, "update_goal");
 	assert.equal(SET_GOAL_TASKS_TOOL_NAME, "set_goal_tasks");
 	assert.equal(UPDATE_GOAL_TASK_TOOL_NAME, "update_goal_task");
+	assert.equal(FOCUS_GOAL_TOOL_NAME, "focus_goal");
+	assert.equal(UNFOCUS_GOAL_TOOL_NAME, "unfocus_goal");
 });
 
-test("fixed profiles: core three, task two, all five registered", () => {
+test("fixed profiles: core five, task two, all seven registered", () => {
 	assert.deepEqual(CORE_GOAL_TOOL_NAMES, CORE);
 	assert.deepEqual(TASK_TOOL_NAMES, ["set_goal_tasks", "update_goal_task"]);
 	assert.deepEqual(FIVE_GOAL_TOOLS, [...CORE, ...TASK_TOOL_NAMES]);
 	assert.deepEqual(CORE_GOAL_TOOLS, CORE);
 	assert.deepEqual(DRAFTING_GOAL_TOOLS, DRAFTING);
-	// The registry is the fixed five plus the transient drafting profile; the
-	// INSTALLED profile (installGoalToolProfile) still only ever installs the
-	// three/five execution set.
+	// The registry is the fixed execution set plus the transient drafting
+	// profile; the INSTALLED profile (installGoalToolProfile) still only ever
+	// installs the execution set, never a phase-dependent subset.
 	assert.deepEqual(ALL_REGISTERED_GOAL_TOOLS, [...FIVE_GOAL_TOOLS, ...DRAFTING_GOAL_TOOLS]);
 });
 
@@ -87,9 +96,22 @@ test("progress tool set excludes read-only surface tools and workhorse includes 
 	}
 });
 
-test("work tool set covers the five goal tools plus common host work tools", () => {
+// Choosing which goal to work on is not working on it. The empty-turn gate asks
+// "did this turn do anything for the goal"; a turn that only took or released
+// focus did not, and counting it would let a session keep waking itself by
+// re-focusing.
+const FOCUS_CONTROL = [FOCUS_GOAL_TOOL_NAME, UNFOCUS_GOAL_TOOL_NAME];
+
+test("work tool set covers the goal work tools plus common host work tools", () => {
 	for (const name of FIVE_GOAL_TOOLS) {
+		if (FOCUS_CONTROL.includes(name)) continue;
 		assert.ok(GOAL_WORK_TOOL_NAMES.includes(name as typeof GOAL_WORK_TOOL_NAMES[number]), `work set must include ${name}`);
+	}
+	for (const name of FOCUS_CONTROL) {
+		assert.equal(GOAL_WORK_TOOL_NAMES.includes(name as typeof GOAL_WORK_TOOL_NAMES[number]), false,
+			`focus control ${name} must not count as goal work`);
+		assert.equal(GOAL_PROGRESS_TOOL_NAMES.includes(name as typeof GOAL_PROGRESS_TOOL_NAMES[number]), false,
+			`focus control ${name} must not count as goal progress`);
 	}
 	for (const name of ["bash", "write", "read", "edit", "grep", "find", "ls"]) {
 		assert.ok(GOAL_WORK_TOOL_NAMES.includes(name as typeof GOAL_WORK_TOOL_NAMES[number]), `work set must include ${name}`);
