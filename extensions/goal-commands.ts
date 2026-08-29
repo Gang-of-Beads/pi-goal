@@ -31,6 +31,13 @@ import { clearGoalDrafting, hasActiveDraft, startGoalDrafting } from "./goal-dra
 import { formatRecoveryReport, runRecoveryReport, runRecoveryRepair } from "./goal-recovery.ts";
 import { formatCheckpointHealthReport, readSessionCheckpointHealth } from "./goal-session-health.ts";
 
+/**
+ * Durable record type for blocking command-guard exits (reportGuardBlock).
+ * Sibling custom entries: "pi-goal-draft" (goal-drafting.ts), "pi-goal-focus"
+ * (goal-format.ts), "pi-goal-event"/"pi-goal-audit-event" (goal-format.ts).
+ */
+const GUARD_ENTRY = "pi-goal-guard";
+
 export interface GoalRefreshState {
 	poolIds: Iterable<string>;
 	ledgerEvents: number;
@@ -81,6 +88,30 @@ import type { GoalCore } from "./goal-state.ts";
 export function registerGoalCommands(core: GoalCore): void {
 	const { pi } = core;
 
+	/**
+	 * Blocking guard exits must fail loudly and durably. Warning-only notifies
+	 * vanish on some hosts: pi-web flattens "warning" into an ephemeral
+	 * broadcast persisted nowhere, so a guard-blocked /goal-tweak left no
+	 * transcript entry, no reply, and no error. Every guard that the user must
+	 * act on reports through here: an error-class notify (routed to the host
+	 * notification store) plus a durable session record — a visible custom
+	 * message entry while the session is idle, or a bare custom entry while a
+	 * turn is running (steering guard text into the agent loop would change
+	 * command semantics).
+	 */
+	function reportGuardBlock(ctx: ExtensionContext, message: string): void {
+		ctx.ui.notify(message, "error");
+		try {
+			if (ctx.isIdle()) {
+				pi.sendMessage({ customType: GUARD_ENTRY, content: message, display: true, details: { at: nowIso() } }, { triggerTurn: false });
+			} else {
+				pi.appendEntry(GUARD_ENTRY, { message, at: nowIso() });
+			}
+		} catch {
+			// Visibility is best-effort; the error notify above already fired.
+		}
+	}
+
 	async function chooseOpenGoal(ctx: ExtensionContext, title: string): Promise<GoalRecord | null> {
 		core.reconcileFocusedGoalFromDisk(ctx);
 		if (core.state.goal && core.state.goal.status !== "complete") return core.state.goal;
@@ -93,7 +124,7 @@ export function registerGoalCommands(core: GoalCore): void {
 			return core.state.goal;
 		}
 		if (!ctx.hasUI) {
-			ctx.ui.notify(buildUnfocusedOpenGoalsSummary(open.length), "warning");
+			reportGuardBlock(ctx, buildUnfocusedOpenGoalsSummary(open.length));
 			return null;
 		}
 		const labels = open.map((item) => goalSelectorLabel(item, core.focusedGoalId));
@@ -116,7 +147,7 @@ export function registerGoalCommands(core: GoalCore): void {
 	async function focusGoalCommand(ctx: ExtensionContext): Promise<void> {
 		const open = core.openGoals();
 		if (open.length === 0) {
-			ctx.ui.notify("No open goals. Use /goal to draft one, or /goal-direct <objective> to start immediately.", "warning");
+			reportGuardBlock(ctx, "No open goals. Use /goal to draft one, or /goal-direct <objective> to start immediately.");
 			return;
 		}
 		if (open.length === 1) {
@@ -181,11 +212,11 @@ export function registerGoalCommands(core: GoalCore): void {
 		const raw = rawObjective.trim();
 		if (!raw) {
 			const command = mode === "sisyphus" ? "/sisyphus <objective>" : "/goal <objective>";
-			ctx.ui.notify(`No objective provided. Use ${command}.`, "warning");
+			reportGuardBlock(ctx, `No objective provided. Use ${command}.`);
 			return;
 		}
 		if (mode === "sisyphus" && !sisyphusObjectiveSufficient(raw)) {
-			ctx.ui.notify("A Sisyphus objective needs ordered steps with per-step done criteria. Use /sisyphus for guided drafting, or provide numbered steps (1) ..., 2) ...) in the objective.", "warning");
+			reportGuardBlock(ctx, "A Sisyphus objective needs ordered steps with per-step done criteria. Use /sisyphus for guided drafting, or provide numbered steps (1) ..., 2) ...) in the objective.");
 			return;
 		}
 		const settings = loadGoalSettings(ctx.cwd);
@@ -310,14 +341,14 @@ export function registerGoalCommands(core: GoalCore): void {
 				const selected = await chooseOpenGoal(ctx, "Pause which open goal?");
 				if (!selected) return;
 			} else {
-				ctx.ui.notify("No goal is set.", "warning");
+				reportGuardBlock(ctx, "No goal is set. Use /goal to draft one, or /goal-direct <objective> to create one immediately.");
 				return;
 			}
 		}
 		const currentGoal = core.state.goal;
 		if (!currentGoal) return;
 		if (currentGoal.status === "complete") {
-			ctx.ui.notify("Goal is complete.", "warning");
+			reportGuardBlock(ctx, "Goal is complete. Use /goal to draft a new one, or /goal-direct <objective> to create one immediately.");
 			return;
 		}
 		if (currentGoal.status === "paused") {
@@ -340,8 +371,12 @@ export function registerGoalCommands(core: GoalCore): void {
 		}
 		const resumeGate = validateResumeGoal(core.state.goal);
 		if (!resumeGate.ok) {
-			const level = resumeGate.message.includes("already running") ? "info" : "warning";
-			ctx.ui.notify(resumeGate.message, level);
+			if (resumeGate.message.includes("already running")) {
+				// Benign no-op: the goal is running; nothing for the user to fix.
+				ctx.ui.notify(resumeGate.message, "info");
+			} else {
+				reportGuardBlock(ctx, resumeGate.message);
+			}
 			return;
 		}
 		if (!core.state.goal) throw new Error("Goal disappeared during resume validation.");
@@ -665,7 +700,7 @@ export function registerGoalCommands(core: GoalCore): void {
 			if (!selected) return;
 		}
 		if (!core.state.goal) {
-			ctx.ui.notify(clearGoalCommandMessage({ archived: false }), "warning");
+			reportGuardBlock(ctx, clearGoalCommandMessage({ archived: false }));
 			return;
 		}
 		// Snapshot the selected goal id and focus revision before asking.
@@ -673,7 +708,7 @@ export function registerGoalCommands(core: GoalCore): void {
 		// Headless behavior is explicit: guidance without mutation. Clearing
 		// requires an interactive confirmation (follow-up Stage 2).
 		if (!ctx.hasUI) {
-			ctx.ui.notify(`Run /goal-clear in an interactive session to confirm clearing: ${oneLineSummary(target)}`, "warning");
+			reportGuardBlock(ctx, `Run /goal-clear in an interactive session to confirm clearing: ${oneLineSummary(target)}`);
 			return;
 		}
 		const confirmed = await ctx.ui.confirm("Clear goal?", oneLineSummary(target));
@@ -687,7 +722,7 @@ export function registerGoalCommands(core: GoalCore): void {
 		// to be pressed twice.
 		core.reconcileFocusedGoalFromDisk(ctx);
 		if (!core.state.goal || core.state.goal.id !== target.id) {
-			ctx.ui.notify("Goal changed while confirming; nothing was cleared.", "warning");
+			reportGuardBlock(ctx, "Goal changed while confirming; nothing was cleared. Re-run /goal-clear to confirm again.");
 			return;
 		}
 		const archived = core.archiveCurrentGoal(ctx, "user");
@@ -704,25 +739,25 @@ export function registerGoalCommands(core: GoalCore): void {
 				const selected = await chooseOpenGoal(ctx, "Tweak which open goal?");
 				if (!selected) return;
 			} else {
-				ctx.ui.notify("No goal is set. Use /goal to draft one, or /goal-direct <objective> to create one immediately.", "warning");
+				reportGuardBlock(ctx, "No goal is set. Use /goal to draft one, or /goal-direct <objective> to create one immediately.");
 				return;
 			}
 		}
 		const currentGoal = core.state.goal;
 		if (!currentGoal) return;
 		if (currentGoal.status === "complete") {
-			ctx.ui.notify("Goal is complete. Use /goal to draft a new one, or /goal-direct <objective> to create one immediately.", "warning");
+			reportGuardBlock(ctx, "Goal is complete. Use /goal to draft a new one, or /goal-direct <objective> to create one immediately.");
 			return;
 		}
 		const trimmed = replacement.trim();
 		if (!trimmed) {
-			ctx.ui.notify("Provide the replacement objective: /goal-tweak <new objective>", "info");
+			reportGuardBlock(ctx, "Provide the replacement objective: /goal-tweak <new objective>");
 			return;
 		}
 		const max = loadGoalSettings(ctx.cwd).objectiveMaxChars;
 		if (trimmed.length > (max ?? 0)) {
 			if (max !== undefined && max > 0) {
-				ctx.ui.notify(`Replacement objective exceeds ${max} characters (${trimmed.length}).`, "warning");
+				reportGuardBlock(ctx, `Replacement objective exceeds ${max} characters (${trimmed.length}). Shorten the objective and re-run /goal-tweak.`);
 				return;
 			}
 		}
