@@ -172,6 +172,75 @@ export function trailingCheckpointWithoutTurn(entries: readonly unknown[], goalI
 	return false;
 }
 
+/**
+ * The custom_message type pi-web writes when a posted ask is closed — by an
+ * answer, a dismissal, or being voided in favor of a chat message. Cross-repo
+ * contract: pi-web `src/shared/apiTypes.ts` `ASK_USER_ANSWERS_CUSTOM_TYPE`.
+ */
+export const PI_WEB_ASK_ANSWERS_CUSTOM_TYPE = "pi-web.ask.answers";
+
+/**
+ * Whether a toolResult is pi-web's non-blocking ask: the tool posted the
+ * questions to the browser, ended the run, and carries the daemon-owned ask
+ * in `details.ask`. The presence of that structured shape — not the result
+ * text — is what says "the human has not answered yet". A toolResult without
+ * it is a blocking ask from another host, whose outcome IS the result.
+ */
+function isDaemonPostedAskResult(message: Record<string, unknown>): boolean {
+	const details = asRecord(message.details);
+	const ask = asRecord(details?.ask);
+	return typeof ask?.askId === "string";
+}
+
+function hasAskUserToolCall(message: Record<string, unknown>): boolean {
+	const content = message.content;
+	if (!Array.isArray(content)) return false;
+	return content.some((item) => {
+		const record = asRecord(item);
+		return record?.type === "toolCall" && record.name === "ask_user";
+	});
+}
+
+/**
+ * Whether the trailing branch carries a user-facing question nobody has answered.
+ *
+ * WHY: an unanswered question is not quiescence. While an ask_user card waited
+ * for the owner in pi-web, the continuation injected checkpoints every ~3s
+ * (measured: entries 2676→2688 of the live session file), each one pushing the
+ * card further down the page until the owner could not tap his own options.
+ *
+ * The scan reads only shapes, never prose, and one rule does the hard work:
+ * only a `pi-web.ask.answers` outcome clears a pending ask. Everything else
+ * between the ask and now is skipped — crucially the goal's own checkpoint
+ * custom_messages and the replies they triggered, which are `message` entries
+ * and would otherwise read as "the turn was taken". A toolResult for
+ * `ask_user` that lacks the daemon-owned `details.ask` shape is a completed
+ * blocking ask from another host, so it ends the scan as "not pending" rather
+ * than being skipped: in such hosts the result landing means the human already
+ * answered. While the run is merely mid-call (call without any result yet) the
+ * session is not idle anyway, but reading it as pending keeps the hold honest
+ * if a result was lost to a runtime replacement.
+ */
+export function trailingAskWithoutAnswer(entries: readonly unknown[]): boolean {
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = asRecord(entries[index]);
+		if (!entry) continue;
+		if (entry.type === "custom_message") {
+			if (entry.customType === PI_WEB_ASK_ANSWERS_CUSTOM_TYPE) return false;
+			continue; // goal checkpoints and any other custom traffic are not answers
+		}
+		if (entry.type !== "message") continue;
+		const message = asRecord(entry.message);
+		if (!message) continue;
+		if (message.role === "toolResult") {
+			if (message.toolName !== "ask_user") continue;
+			return isDaemonPostedAskResult(message);
+		}
+		if (message.role === "assistant" && hasAskUserToolCall(message)) return true;
+	}
+	return false;
+}
+
 /** The branch this session is on, or nothing when the host cannot supply it. */
 function branchEntries(ctx: ExtensionContext): readonly unknown[] {
 	try {
@@ -226,8 +295,8 @@ export class GoalRuntime {
 	 * never had.
 	 */
 	private continuationEpoch = 0;
-	/** When the current queued continuation first deferred to background work. */
-	private backgroundDeferralSince: number | null = null;
+	/** When the current queued continuation first deferred to a busy cause (pending question or background work). */
+	private busyDeferralSince: number | null = null;
 	private networkErrorRetryGoalId: string | null = null;
 	private networkErrorRetryAttempt = 0;
 	private networkErrorRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -261,7 +330,7 @@ export class GoalRuntime {
 	clearContinuationState(resetNetworkErrorBackoff = true): void {
 		this.clearContinuationTimer();
 		this.continuationQueuedFor = null;
-		this.backgroundDeferralSince = null;
+		this.busyDeferralSince = null;
 		if (resetNetworkErrorBackoff) this.clearNetworkErrorBackoff();
 	}
 
@@ -377,7 +446,7 @@ export class GoalRuntime {
 		this.continuationScheduledFor = null;
 		if (!this.hooks.isActionable(scheduledGoalId)) {
 			if (this.continuationQueuedFor === scheduledGoalId) this.continuationQueuedFor = null;
-			this.backgroundDeferralSince = null;
+			this.busyDeferralSince = null;
 			return;
 		}
 
@@ -386,7 +455,7 @@ export class GoalRuntime {
 			ready = !ctx.hasPendingMessages() && ctx.isIdle();
 		} catch {
 			if (this.continuationQueuedFor === scheduledGoalId) this.continuationQueuedFor = null;
-			this.backgroundDeferralSince = null;
+			this.busyDeferralSince = null;
 			return;
 		}
 
@@ -396,12 +465,24 @@ export class GoalRuntime {
 			this.continuationTimer.unref?.();
 			return;
 		}
+		const branch = branchEntries(ctx);
+		// An unanswered user-facing question is not quiescence either: injecting
+		// now would pump the very card the human is trying to tap. Hold with the
+		// same bounded fallback as background work, re-reading the branch each
+		// poll. Evaluated before the goal/stall guards so held polls never
+		// consume their budgets, and before the checkpoint dedup below — the
+		// dedup would swallow the continuation without a timer, but a question
+		// must wake the goal the moment it is answered.
+		if (trailingAskWithoutAnswer(branch)) {
+			if (await this.deferWhileBusy(ctx, scheduledGoalId, epoch, "an unanswered question", () => Promise.resolve(trailingAskWithoutAnswer(branchEntries(ctx))))) return;
+			if (epoch !== this.continuationEpoch) return; // superseded while probing
+		}
 		// Background-work deferral: with an active subagent run or background
 		// task the follow-up must not interrupt; hold it (poll BACKGROUND_BUSY_POLL_MS)
 		// until the registries report quiescence. Evaluated before the goal/stall
 		// guards below so held polls never consume their budgets.
 		if (this.hooks.hasActiveBackgroundWork) {
-			if (await this.deferWhileBackgroundWorkActive(ctx, scheduledGoalId, epoch)) return;
+			if (await this.deferWhileBusy(ctx, scheduledGoalId, epoch, "active background work", async () => Boolean(await this.hooks.hasActiveBackgroundWork?.()))) return;
 			if (epoch !== this.continuationEpoch) return; // superseded while probing
 		}
 		const goal = this.hooks.getGoal();
@@ -410,10 +491,10 @@ export class GoalRuntime {
 			this.continuationScheduledFor = null;
 			return;
 		}
-		const branch = branchEntries(ctx);
 		// The dedup markers on this instance say nothing about a checkpoint an
 		// earlier instance sent. An unanswered checkpoint on the branch does, and
-		// asking twice for one step pays for the turn twice.
+		// asking twice for one step pays for the turn twice. `branch` was read
+		// above, before the pending-ask hold.
 		if (trailingCheckpointWithoutTurn(branch, scheduledGoalId)) {
 			this.continuationQueuedFor = scheduledGoalId;
 			this.continuationScheduledFor = null;
@@ -459,31 +540,33 @@ export class GoalRuntime {
 	}
 
 	/**
-	 * Hold the follow-up while background work is active. Returns true when the
-	 * continuation was rescheduled (still held), false when the send may
-	 * proceed: quiescent registries, a probe that cannot answer, or the
-	 * deferral cap reached (a lost/husk run must not stall the goal forever).
+	 * Hold the follow-up while `busy` reports active — a pending question, or
+	 * active background work. Both share one hold clock (`busyDeferralSince`):
+	 * what the cap bounds is how long THIS scheduled continuation has been held
+	 * by any busy cause, so alternating causes cannot hold it forever in
+	 * aggregate. Returns true when the continuation was rescheduled (still
+	 * held), false when the send may proceed: quiescence, an uncertain probe
+	 * (must never stall), or the deferral cap reached (a lost/husk run or an
+	 * unanswered human must not stall the goal forever).
 	 */
-	private async deferWhileBackgroundWorkActive(ctx: ExtensionContext, scheduledGoalId: string, epoch: number): Promise<boolean> {
-		const probe = this.hooks.hasActiveBackgroundWork;
-		if (!probe) return false;
+	private async deferWhileBusy(ctx: ExtensionContext, scheduledGoalId: string, epoch: number, label: string, busy: () => Promise<boolean>): Promise<boolean> {
 		let active = false;
 		try {
-			active = await probe();
+			active = await busy();
 		} catch {
 			active = false; // uncertain detection must never stall the goal
 		}
 		if (epoch !== this.continuationEpoch) return true; // superseded while probing
 		if (!active) {
-			this.backgroundDeferralSince = null;
+			this.busyDeferralSince = null;
 			return false;
 		}
-		const since = this.backgroundDeferralSince ?? Date.now();
+		const since = this.busyDeferralSince ?? Date.now();
 		if (Date.now() - since >= MAX_BACKGROUND_DEFERRAL_MS) {
-			this.backgroundDeferralSince = null;
+			this.busyDeferralSince = null;
 			try {
 				ctx.ui.notify(
-					`Goal continuation deferred ${Math.round(MAX_BACKGROUND_DEFERRAL_MS / 60_000)}m by active background work; resuming the goal now.`,
+					`Goal continuation deferred ${Math.round(MAX_BACKGROUND_DEFERRAL_MS / 60_000)}m by ${label}; resuming the goal now.`,
 					"warning",
 				);
 			} catch {
@@ -491,7 +574,7 @@ export class GoalRuntime {
 			}
 			return false;
 		}
-		this.backgroundDeferralSince = since;
+		this.busyDeferralSince = since;
 		this.continuationScheduledFor = scheduledGoalId;
 		this.continuationTimer = setTimeout(() => void this.sendQueuedContinuation(ctx, scheduledGoalId, epoch), BACKGROUND_BUSY_POLL_MS);
 		this.continuationTimer.unref?.();

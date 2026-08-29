@@ -300,7 +300,7 @@ test("runtime: a deferral older than the cap falls back to the ordinary send", a
 	runtime.cancelContinuationFor(goal.id);
 
 	// White-box: pretend the current deferral started before the cap.
-	(runtime as unknown as { backgroundDeferralSince: number | null }).backgroundDeferralSince =
+	(runtime as unknown as { busyDeferralSince: number | null }).busyDeferralSince =
 		Date.now() - MAX_BACKGROUND_DEFERRAL_MS - 1;
 
 	await runtime.flushContinuationForTest(ctx, goal.id);
