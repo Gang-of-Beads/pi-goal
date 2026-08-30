@@ -195,22 +195,83 @@ describe("GoalRuntime checkpoint circuit breaker", () => {
    * signal that the agent is not moving, whatever the reason.
    */
   it("stops sending checkpoints when the goal stops changing", () => {
-    const goal = activeGoal();
-    const { runtime, sent } = makeRuntime({ isActionable: () => true, getGoal: () => goal });
+		const goal = activeGoal();
+		const branch: unknown[] = [];
+		const sent: Array<{ content: string; details: Record<string, unknown> }> = [];
+		const runtime = new GoalRuntime({
+			sendFollowUp: (content, details) => {
+				sent.push({ content, details });
+				branch.push({ type: "custom_message", customType: "goal-continuation", content, details });
+				branch.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "(checked the goal; nothing to do)" }] } });
+			},
+			getGoal: () => goal,
+			isActionable: () => true,
+		});
+		const ctx = { ...mockCtx(), sessionManager: { getBranch: () => branch } } as unknown as ExtensionContext;
 
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      runtime.queueContinuation(mockCtx(), goal, true);
-      runtime.flushContinuationForTest(mockCtx(), goal.id);
-    }
+		for (let attempt = 0; attempt < 10; attempt += 1) {
+			runtime.queueContinuation(ctx, goal, true);
+			runtime.flushContinuationForTest(ctx, goal.id);
+		}
 
-    assert.ok(sent.length > 0, "expected at least one checkpoint");
-    assert.ok(
-      sent.length <= 3,
-      `expected the breaker to stop a stalled goal, but sent ${String(sent.length)} checkpoints`,
-    );
-  });
+		assert.ok(sent.length > 0, "expected at least one checkpoint");
+		assert.ok(
+			sent.length <= 3,
+			`expected the breaker to stop a stalled goal, but sent ${String(sent.length)} checkpoints`,
+		);
+	});
 
-  it("keeps going while the goal is actually progressing", () => {
+  it("keeps the breaker across runtime rebuilds — the evidence lives on the branch", () => {
+		/**
+		 * Regression (2026-08-31): the checkpoint storm survived its own breaker. The breaker counted in in-memory instance state, and
+		 * the runtime instance is rebuilt between checkpoints on this host — the
+		 * count reset to zero on every rebuild and the same-unchanged goal kept
+		 * being asked. The stall evidence must live on the branch, where the
+		 * checkpoints themselves were written.
+		 */
+		const goal = activeGoal();
+		const branch: unknown[] = [];
+		const sent: Array<{ content: string; details: Record<string, unknown> }> = [];
+		const make = () => new GoalRuntime({
+			sendFollowUp: (content, details) => {
+				sent.push({ content, details });
+				branch.push({ type: "custom_message", customType: "goal-continuation", content, details });
+				// The turn that answered the checkpoint: the agent woke, looked,
+				// and wrote nothing — the goal's revision did not move. This turn
+				// is what clears the unanswered-checkpoint dedup, so the storm in
+				// production was exactly this shape.
+				branch.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "(checked the goal; nothing to do)" }] } });
+			},
+			getGoal: () => goal,
+			isActionable: () => true,
+		});
+		const ctx = { ...mockCtx(), sessionManager: { getBranch: () => branch } } as unknown as ExtensionContext;
+
+		const first = make();
+		for (let attempt = 0; attempt < 10; attempt += 1) {
+			first.queueContinuation(ctx, goal, true);
+			first.flushContinuationForTest(ctx, goal.id);
+		}
+		const firstCount = sent.length;
+		assert.ok(firstCount >= 1 && firstCount <= 3, `the first runtime's breaker must stop a stalled goal, but sent ${String(firstCount)}`);
+
+		// The rebuild: a fresh runtime over the same branch. The in-memory stall
+		// count died with the old instance; the branch still shows three
+		// consecutive checkpoints at an unchanged revision, so the rebuilt
+		// runtime must hold immediately instead of firing three more.
+		const second = make();
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			second.queueContinuation(ctx, goal, true);
+			second.flushContinuationForTest(ctx, goal.id);
+		}
+		assert.equal(
+			sent.length - firstCount,
+			0,
+			`a rebuilt runtime must inherit the stall evidence from the branch, but sent ${String(sent.length - firstCount)} more checkpoints`,
+		);
+	});
+
+	it("keeps going while the goal is actually progressing", () => {
     const goal = activeGoal();
     let revision = 0;
     const { runtime, sent } = makeRuntime({

@@ -10,7 +10,7 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { asRecord } from "./goal-record.ts";
-import type { GoalCheckpointDetailsV2, GoalRecord } from "./goal-record.ts";
+import { CHECKPOINT_KIND, type GoalCheckpointDetailsV2, type GoalRecord } from "./goal-record.ts";
 import { checkpointTriggerPrompt } from "./prompts/goal-prompts.ts";
 import { POST_STOP_ALLOWED_TOOLS } from "./goal-tool-names.ts";
 import { isNetworkErrorAssistantMessage } from "./goal-format.ts";
@@ -126,20 +126,27 @@ export function trailingNetworkErrorCount(entries: readonly unknown[]): number {
 	return count;
 }
 
-/**
- * The newest checkpoint this goal wrote, read back off the branch.
- *
- * A checkpoint is a `custom_message` carrying v2 details, which is how the loop
- * records that it asked the agent for a step. Reading it back is what lets a
- * runtime answer "did I already ask for this" without trusting memory that a
- * rebuild wiped.
- */
+/** The newest checkpoint this goal wrote, read back off the branch. */
+/** Consecutive trailing checkpoints for this goal at an unchanged revision — turns between them do not reset the stall. */
+export function trailingStalledCheckpointCount(entries: readonly unknown[], goalId: string, currentRevision: number): number {
+	let count = 0;
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = asRecord(entries[index]);
+		if (!entry || entry.type !== "custom_message") continue;
+		const details = asRecord(entry.details);
+		if (!details || details.kind !== CHECKPOINT_KIND || details.goalId !== goalId) continue;
+		if (details.revision !== currentRevision) break;
+		count += 1;
+	}
+	return count;
+}
+
 export function latestCheckpointForGoal(entries: readonly unknown[], goalId: string): GoalCheckpointDetailsV2 | undefined {
 	for (let index = entries.length - 1; index >= 0; index -= 1) {
 		const entry = asRecord(entries[index]);
 		if (!entry || entry.type !== "custom_message") continue;
 		const details = asRecord(entry.details);
-		if (!details || details.kind !== "checkpoint" || details.goalId !== goalId) continue;
+		if (!details || details.kind !== CHECKPOINT_KIND || details.goalId !== goalId) continue;
 		return details as unknown as GoalCheckpointDetailsV2;
 	}
 	return undefined;
@@ -312,7 +319,6 @@ export class GoalRuntime {
 	private checkpointSeq = 0;
 
 	// ── stalled-checkpoint breaker ───────────────────────────────────────
-	private lastCheckpointRevision: number | null = null;
 	private stalledCheckpoints = 0;
 
 	// ── one-time steering reminders ──────────────────────────────────────
@@ -510,12 +516,9 @@ export class GoalRuntime {
 			return;
 		}
 		const revision = goal.revision ?? 0;
-		if (this.lastCheckpointRevision === revision) {
-			this.stalledCheckpoints += 1;
-		} else {
-			this.lastCheckpointRevision = revision;
-			this.stalledCheckpoints = 0;
-		}
+		// Rebuild-proof: count trailing same-revision checkpoints on the branch,
+		// not in memory — the instance is rebuilt between checkpoints.
+		this.stalledCheckpoints = trailingStalledCheckpointCount(branch, goal.id, revision);
 		if (this.stalledCheckpoints >= MAX_STALLED_CHECKPOINTS) {
 			this.continuationQueuedFor = null;
 			this.hooks.onGuardStopped?.(ctx, GUARD_STOP_REASONS.stalledCheckpoints);
