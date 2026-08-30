@@ -13,8 +13,22 @@ export const MAX_PROMPT_FRAGMENT_CHARS = 10_000;
  * Issue #30: a persisted continuation checkpoint is a tiny trigger record, not
  * a full prompt. The authoritative goal state is injected once per turn by
  * before_agent_start; the persisted marker only needs to carry the goal id.
+ *
+ * The bound covers the marker plus one fixed instruction line. Upstream #30
+ * cut the ~6.4K per-turn prompt down to the bare marker and the behavioural
+ * instruction went with it - an agent woken by an empty tag improvises. The
+ * instruction is a constant, so the bound cannot be crept past by goal data.
  */
-export const CHECKPOINT_TRIGGER_MAX_CHARS = 160;
+export const CHECKPOINT_TRIGGER_MAX_CHARS = 400;
+
+/**
+ * What the woken agent must do, as opposed to merely being woken. Objective
+ * and task list already reach it through the system prompt; this is the
+ * discipline of the next step, which lived in the old full prompt and was
+ * lost when the prompt shrank to a marker.
+ */
+const CHECKPOINT_INSTRUCTION =
+	"Continue the active goal. Work from the current state: re-read files and re-run checks rather than trusting memory. Do not repeat completed work; take the next concrete pending task.";
 
 function escapeXmlAttribute(value: string): string {
 	return value
@@ -46,7 +60,8 @@ export function checkpointTriggerPrompt(goalId: string, status?: string): string
 	const content =
 		`<pi_goal_continuation ` +
 		`goal_id="${escapeXmlAttribute(goalId)}" ` +
-		`kind="checkpoint" v="2"${liveStatus}/>`;
+		`kind="checkpoint" v="2"${liveStatus}/>` +
+		`\n${CHECKPOINT_INSTRUCTION}`;
 	assertBounded(content);
 	return content;
 }

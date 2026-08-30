@@ -12,9 +12,14 @@ import * as fs from "node:fs";
 import { GOAL_EVENT_ENTRY } from "./goal-format.ts";
 import { asRecord } from "./goal-record.ts";
 
-/** Exact shape written by checkpointTriggerPrompt() (v2 markers only). */
+/**
+ * Shape written by checkpointTriggerPrompt() (v2 markers only). The marker is
+ * the first line; a fixed instruction line may follow it, so the pattern
+ * anchors the start and tolerates trailing lines rather than demanding the
+ * message be nothing but the tag.
+ */
 const V2_MARKER_PATTERN =
-	/^<pi_goal_continuation\s+goal_id="[^"]+"\s+kind="checkpoint"\s+v="2"\s*\/>$/;
+	/^<pi_goal_continuation\s+goal_id="[^"]+"\s+kind="checkpoint"\s+v="2"[^>]*\/>(?:\n|$)/;
 
 /** Approximate persisted size of one repaired marker, used for projections. */
 export const REPAIRED_MARKER_ESTIMATE_CHARS = "<pi_goal_continuation goal_id=xxxxxxxxxxxxxxxxxxxx kind=\"checkpoint\" v=\"2\"/>".length;

@@ -26,6 +26,22 @@ function goal(overrides = {}) {
 	};
 }
 
+test("the wake message tells the agent how to continue, not just that it should", () => {
+	// Upstream #30 shrank the persisted continuation from ~6.4K chars to a bare
+	// tag to stop session files regrowing - correct - but the behavioural
+	// instruction was thrown out with the bulk. An agent woken by an empty tag
+	// improvises: the owner watched continuation turns wander for a day. The
+	// objective and task list live in the system prompt; what the wake message
+	// must carry is the discipline of the next step.
+	const content = checkpointTriggerPrompt("g-1");
+	assert.match(content, /^<pi_goal_continuation goal_id="g-1" kind="checkpoint" v="2"\/>\n/);
+	assert.match(content, /re-read|current state/i);
+	assert.match(content, /not repeat|next concrete/i);
+	// Still bounded: the instruction is a fixed string, not goal data, so the
+	// cap cannot be crept past by a long objective.
+	assert.ok(content.length <= 400, `wake message is ${content.length} chars`);
+});
+
 test("cache namespace: checkpoint marker never leaks into goalPrompt for the same goal", () => {
 	// Issue #30: the persisted continuation is a tiny v2 marker built fresh per
 	// call (no shared fragment cache), while goalPrompt remains the cached full
@@ -33,7 +49,7 @@ test("cache namespace: checkpoint marker never leaks into goalPrompt for the sam
 	const current = goal({ id: "same-goal" });
 	const continuation = checkpointTriggerPrompt(current.id);
 	const active = goalPrompt(current);
-	assert.match(continuation, /^<pi_goal_continuation goal_id="same-goal" kind="checkpoint" v="2"\/>$/);
+	assert.match(continuation, /^<pi_goal_continuation goal_id="same-goal" kind="checkpoint" v="2"\/>\n/);
 	assert.match(active, /^\[PI GOAL ACTIVE goalId=same-goal\]/);
 	assert.doesNotMatch(active, /kind="checkpoint" v="2"/);
 	const current2 = goal({ id: "same-goal-2" });
@@ -55,16 +71,18 @@ test("goalPrompt wraps objective as untrusted data and includes Sisyphus discipl
 	assert.match(prompt, /update_goal\(\{status: "blocked"\}\)/);
 });
 
-test("continuation checkpoint is a bounded v2 marker carrying only the goal id", () => {
+test("continuation checkpoint is a bounded v2 marker with one fixed instruction line", () => {
 	const current = goal({ id: "goal-abc" });
 	const continuation = continuationPrompt(current);
 
-	assert.equal(continuation, '<pi_goal_continuation goal_id="goal-abc" kind="checkpoint" v="2"/>');
+	// Marker first (machine-readable), instruction after (behavioural). The
+	// instruction is a constant: no goal data may ride in it, so the size is
+	// bounded by construction and issue #30 cannot regress through it.
+	assert.match(continuation, /^<pi_goal_continuation goal_id="goal-abc" kind="checkpoint" v="2"\/>\n/);
 	assert.ok(continuation.length <= CHECKPOINT_TRIGGER_MAX_CHARS);
-	// Operational instructions and state live in the system-prompt injection,
-	// never in the persisted checkpoint.
-	assert.doesNotMatch(continuation, /Continue working toward the active pi goal/);
+	// Goal state itself lives in the system-prompt injection, never here.
 	assert.doesNotMatch(continuation, /update_goal/);
+	assert.doesNotMatch(continuation, /goal-abc.*goal-abc/s);
 });
 
 test("edited-objective and stale prompts point the agent at the right lifecycle path", () => {
@@ -407,12 +425,16 @@ test("legacy-v1 restores pre-PR-E wording but never full checkpoint persistence"
 		const legacyBlock = prompts.taskListBlock(g);
 		assert.match(legacyBlock, /expand the dashboard with Ctrl\+Shift\+T/, "legacy wording restored");
 		assert.match(legacyBlock, /\[ \] t2:/, "legacy duplicates current as generic pending");
-		// Issue #30 stays fixed under BOTH profiles:
-		assert.equal(
-			prompts.continuationPrompt(g),
-			'<pi_goal_continuation goal_id="legacy-goal" kind="checkpoint" v="2"/>',
-			"continuation marker unchanged under legacy-v1",
+		// Issue #30 stays fixed under BOTH profiles: the marker plus one fixed
+		// instruction line, never the full per-turn prompt.
+		const legacyContinuation = prompts.continuationPrompt(g);
+		assert.match(
+			legacyContinuation,
+			/^<pi_goal_continuation goal_id="legacy-goal" kind="checkpoint" v="2"\/>\n/,
+			"continuation marker first, instruction after, under legacy-v1",
 		);
+		assert.ok(legacyContinuation.length <= 400, "bounded under legacy-v1");
+		assert.doesNotMatch(legacyContinuation, /Current task|Later task/, "no goal data leaks into the wake message");
 	} finally {
 		if (originalEnv === undefined) delete process.env.PI_GOAL_PROMPT_PROFILE;
 		else process.env.PI_GOAL_PROMPT_PROFILE = originalEnv;
@@ -434,6 +456,6 @@ test("checkpoint states the live status so a stale pause banner cannot win", () 
 	assert.match(continuation, /status="active"/);
 	assert.match(
 		continuation,
-		/^<pi_goal_continuation goal_id="resumed-goal" kind="checkpoint" v="2" status="active"\/>$/,
+		/^<pi_goal_continuation goal_id="resumed-goal" kind="checkpoint" v="2" status="active"\/>\n/,
 	);
 });
