@@ -8,7 +8,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { GoalAccounting, budgetLine, budgetReached, budgetRemaining } from "../extensions/goal-accounting.ts";
-import { GoalRuntime } from "../extensions/goal-runtime.ts";
+import { GoalRuntime, MAX_STALLED_CHECKPOINTS, resumeRevision, trailingStalledCheckpointCount } from "../extensions/goal-runtime.ts";
 import { createGoal } from "../extensions/goal-record.ts";
 import type { GoalRecord } from "../extensions/goal-record.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -309,5 +309,39 @@ describe("a goal paused between queueing and sending", () => {
 		runtime.flushContinuationForTest(mockCtx(), goal.id);
 
 		assert.ok(sent.length > 0, "an active goal should still be driven");
+	});
+});
+
+describe("resume revision bump", () => {
+	/**
+	 * Regression (2026-08-31): the owner's org-hub goal stopped driving and a
+	 * pause/resume cycle did not restore it. The breaker reads trailing
+	 * same-revision checkpoints off the branch, and the resume path left the
+	 * revision untouched — so the first continuation after the resume re-read
+	 * the pre-pause debris (>= 3 checkpoints at the same revision) and
+	 * guard-stopped immediately. The resume must earn a fresh revision: the
+	 * debris stays on the branch as history, but it is the previous run's
+	 * evidence, not this one's.
+	 */
+	it("counts checkpoints from zero after a resume bumps the revision", () => {
+		const goal = activeGoal();
+		const stalledRevision = goal.revision ?? 0;
+		const branch: unknown[] = [];
+		for (let index = 0; index < MAX_STALLED_CHECKPOINTS + 1; index += 1) {
+			branch.push({ type: "custom_message", customType: "goal-continuation", content: "c", details: { kind: "checkpoint", goalId: goal.id, revision: stalledRevision, checkpointSeq: index + 1 } });
+		}
+		// Trailing non-checkpoint entries do not reset the stall; the branch
+		// ends with the debris exactly as a stalled run leaves it.
+		branch.push({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "(idle)" }] } });
+
+		const resumed = { ...goal, revision: resumeRevision(goal) };
+		assert.equal(trailingStalledCheckpointCount(branch, goal.id, resumed.revision ?? 0), 0);
+		assert.equal(trailingStalledCheckpointCount(branch, goal.id, stalledRevision), MAX_STALLED_CHECKPOINTS + 1);
+	});
+
+	it("resumeRevision always moves forward, even from a missing revision", () => {
+		assert.equal(resumeRevision(undefined), 1);
+		assert.equal(resumeRevision({ revision: 0 }), 1);
+		assert.equal(resumeRevision({ revision: 7 }), 8);
 	});
 });

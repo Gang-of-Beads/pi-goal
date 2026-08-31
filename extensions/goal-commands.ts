@@ -3,6 +3,7 @@ import path from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { extractVerificationContract, sisyphusObjectiveSufficient } from "./goal-contract.ts";
 import { detailedSummary, oneLineSummary } from "./goal-format.ts";
+import { resumeRevision } from "./goal-runtime.ts";
 import {
 	goalSettingsPath,
 	goalGlobalSettingsPath,
@@ -385,6 +386,10 @@ export function registerGoalCommands(core: GoalCore): void {
 				...mergeGoalPromptFromDisk(ctx, core.state.goal),
 				status: "active",
 				autoContinue: true,
+				// A resume is a human restart: the stall evidence on the branch
+				// describes the revision that stalled, so the resumed run gets a
+				// fresh revision and the breaker counts from zero.
+				revision: resumeRevision(core.state.goal),
 				stopReason: undefined,
 				pauseReason: undefined,
 				pauseSuggestedAction: undefined,

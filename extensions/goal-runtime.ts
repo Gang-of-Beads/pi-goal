@@ -654,3 +654,13 @@ export class GoalRuntime {
 		return true;
 	}
 }
+
+/**
+ * A resume is a human decision to restart the work: the stall evidence on the
+ * branch describes the previous run and stays there as history, but it belongs
+ * to the revision that stalled. Bumping the revision on resume is what makes
+ * the breaker count from zero without rewriting the branch.
+ */
+export function resumeRevision(goal: { revision?: number } | undefined): number {
+	return (goal?.revision ?? 0) + 1;
+}
