@@ -163,4 +163,38 @@ describe("a continuation that is already in flight", () => {
 		assert.equal(runtime.continuationPendingFor(goal.id), true);
 		assert.equal(sent.length, 1);
 	});
+
+	/**
+	 * The parked dedup assumes the request's owner is alive. A daemon restart
+	 * breaks that assumption: the trailing checkpoint belongs to a dead
+	 * process, the turn it waits for can never arrive, and the parked marker
+	 * has no timer — the goal idles forever with nothing running. The one
+	 * moment a rebuilt runtime can be certain of this is session start, so the
+	 * restart re-arm re-sends across the stale checkpoint.
+	 */
+	it("re-sends across a stale trailing checkpoint when re-armed after a restart", async () => {
+		const goal = activeGoal();
+		const sent: string[] = [];
+		const branch = [checkpoint()];
+		const runtime = runtimeSending(sent, goal);
+
+		runtime.rearmAfterRestart(ctxWithBranch(branch), goal);
+		// rearmAfterRestart schedules through a (0ms idle) timer; let it fire.
+		await new Promise((resolve) => setTimeout(resolve, 20));
+
+		assert.equal(sent.length, 1);
+		assert.equal(runtime.continuationPendingFor(goal.id), true);
+	});
+
+	/** The restart re-arm keeps every other guard: an idle goal is not sent. */
+	it("does not re-arm an inactive goal after a restart", () => {
+		const goal = { ...activeGoal(), status: "paused" as const };
+		const sent: string[] = [];
+		const runtime = runtimeSending(sent, goal);
+
+		runtime.rearmAfterRestart(ctxWithBranch([]), goal);
+
+		assert.equal(sent.length, 0);
+		assert.equal(runtime.continuationPendingFor(goal.id), false);
+	});
 });

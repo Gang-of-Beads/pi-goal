@@ -127,6 +127,9 @@ export interface GoalCore {
 	/** §auditor-toggle: flip the focused goal's persisted per-goal skipAuditor and record the ledger event. */
 	toggleGoalAuditor(ctx: ExtensionContext): void;
 	queueContinuation(ctx: ExtensionContext, force?: boolean): void;
+	/** Session-start re-arm: re-sends across a stale trailing checkpoint the dead
+	 * previous instance owned. See GoalRuntime.rearmAfterRestart. */
+	rearmContinuationAfterRestart(ctx: ExtensionContext): void;
 	flushGoalTransaction(ctx: ExtensionContext): void;
 	replaceGoal(config: GoalCreationConfig, ctx: ExtensionContext, startNow?: boolean, verificationContract?: string, tokenBudget?: number): void;
 	/** F5: bump the last-activity timestamp (called on real work events). */
@@ -905,6 +908,20 @@ export function createGoalCore(
 		runtime.queueContinuation(ctx, state.goal, force);
 	}
 
+	/**
+	 * Re-arm the continuation over a stale trailing checkpoint.
+	 *
+	 * session_start is the one moment a runtime instance can be certain the
+	 * previous instance's in-flight follow-up request is gone: the process that
+	 * sent it is gone. Parking on the branch's trailing checkpoint here would
+	 * idle the goal forever (that park has no timer), so this path re-sends
+	 * across it. See GoalRuntime.rearmAfterRestart.
+	 */
+	function rearmContinuationAfterRestart(ctx: ExtensionContext): void {
+		if (!state.goal) return;
+		runtime.rearmAfterRestart(ctx, state.goal);
+	}
+
 	function enterGoalModal(): void {
 		goalModalDepth++;
 	}
@@ -1083,6 +1100,7 @@ export function createGoalCore(
 		blockActiveGoalOnGuard,
 		toggleGoalAuditor,
 		queueContinuation,
+		rearmContinuationAfterRestart,
 		flushGoalTransaction,
 		touchGoalActivity,
 		checkStall,

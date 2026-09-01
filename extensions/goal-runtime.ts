@@ -382,6 +382,38 @@ export class GoalRuntime {
 		return this.sendQueuedContinuation(ctx, goalId);
 	}
 
+	/**
+	 * Re-arm after this runtime instance came into being over a branch that
+	 * already carries the goal's unanswered checkpoint.
+	 *
+	 * The normal flow parks on a trailing checkpoint without sending: the
+	 * follow-up request is already in flight, and asking twice for one step
+	 * pays for the turn twice. That park assumes the request's owner is alive.
+	 * A daemon restart (or any runtime rebuild) breaks the assumption — the
+	 * request died with the old process, the turn will never arrive, and the
+	 * parked marker has no timer to wake it, so the goal idles forever. This is
+	 * the reported "no continuation with nothing running" after a restart.
+	 *
+	 * A fresh instance owns no in-flight request, so it re-sends across the
+	 * stale checkpoint; the newer checkpoint it writes supersedes the stale one
+	 * for every later dedup read.
+	 */
+	rearmAfterRestart(ctx: ExtensionContext, goal: GoalRecord): void {
+		if (goal.status !== "active" || !goal.autoContinue) return;
+		const goalId = goal.id;
+		this.clearContinuationTimer(); // also bumps the epoch: older fired callbacks abandon
+		const epoch = this.continuationEpoch;
+		let delay = CONTINUATION_IDLE_RETRY_MS;
+		try {
+			delay = ctx.isIdle() && !ctx.hasPendingMessages() ? 0 : CONTINUATION_IDLE_RETRY_MS;
+		} catch {
+			return;
+		}
+		this.continuationScheduledFor = goalId;
+		this.continuationTimer = setTimeout(() => void this.sendQueuedContinuation(ctx, goalId, epoch, { staleCheckpointOwnedByDeadInstance: true }), delay);
+		this.continuationTimer.unref?.();
+	}
+
 	/** Cancel a pending continuation for a goal id (e.g. after update/clear/focus change). */
 	cancelContinuationFor(goalId: string): void {
 		if (this.continuationQueuedFor === goalId) this.continuationQueuedFor = null;
@@ -446,7 +478,7 @@ export class GoalRuntime {
 	 * details are a bounded structured record; before_agent_start injects the
 	 * authoritative full prompt once per turn.
 	 */
-	private async sendQueuedContinuation(ctx: ExtensionContext, scheduledGoalId: string, epoch: number = this.continuationEpoch): Promise<void> {
+	private async sendQueuedContinuation(ctx: ExtensionContext, scheduledGoalId: string, epoch: number = this.continuationEpoch, options: { staleCheckpointOwnedByDeadInstance?: boolean } = {}): Promise<void> {
 		if (epoch !== this.continuationEpoch) return; // superseded by a newer schedule/clear
 		this.continuationTimer = null;
 		this.continuationScheduledFor = null;
@@ -501,7 +533,9 @@ export class GoalRuntime {
 		// earlier instance sent. An unanswered checkpoint on the branch does, and
 		// asking twice for one step pays for the turn twice. `branch` was read
 		// above, before the pending-ask hold.
-		if (trailingCheckpointWithoutTurn(branch, scheduledGoalId)) {
+		// A restart-armed send supersedes this: the parked checkpoint belongs to
+		// a process that no longer exists, so parking on it would idle forever.
+		if (trailingCheckpointWithoutTurn(branch, scheduledGoalId) && !options.staleCheckpointOwnedByDeadInstance) {
 			this.continuationQueuedFor = scheduledGoalId;
 			this.continuationScheduledFor = null;
 			return;

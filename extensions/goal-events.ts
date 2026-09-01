@@ -344,7 +344,11 @@ export function registerGoalEvents(core: GoalCore): void {
 			}
 		}
 		core.beginAccounting();
-		core.queueContinuation(ctx, true);
+		// A session start over a branch whose tail is this goal's own unanswered
+		// checkpoint must re-send across it — the instance that sent that
+		// checkpoint is gone (restart or rebuild), so its follow-up request died
+		// with it and parking on the checkpoint would idle the goal forever.
+		core.rearmContinuationAfterRestart(ctx);
 	});
 
 	pi.on("session_before_compact", async (_event, ctx) => {

@@ -335,11 +335,11 @@ test("goal-clear survives a state reload while its dialog is open", async () => 
 	try {
 		const h = createHarness(cwd);
 		(h.ctx as { hasUI: boolean }).hasUI = true;
-		(h.ctx.ui as { confirm: () => Promise<boolean> }).confirm = async () => true;
+		(h.ctx.ui as unknown as { confirm: () => Promise<boolean> }).confirm = async () => true;
 		await h.commands.get("goal-direct")!.handler("Ship a small feature", h.ctx);
 		assert.equal(activeGoalFiles(cwd).length, 1, `goal not created: ${h.notifications.join(" | ")}`);
 
-		(h.ctx.ui as { confirm: () => Promise<boolean> }).confirm = async () => {
+		(h.ctx.ui as unknown as { confirm: () => Promise<boolean> }).confirm = async () => {
 			// Whatever reloads state during the dialog - the shape this guards
 			// against is a revision bump, not a different goal.
 			// A reload during the dialog: focus lands back on the same goal, and
