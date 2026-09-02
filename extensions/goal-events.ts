@@ -284,14 +284,18 @@ export function registerGoalEvents(core: GoalCore): void {
 			core.updateUI(ctx);
 		}
 
-		// If the assistant ended a turn without queuing more tool calls, push a continuation right away.
-		// #4: only queue if some real work was done this turn — otherwise the model is
-		// just chatting and we should not keep firing turns on noise.
+		// A turn that ended without queuing more tool calls continues the goal.
+		// This used to require a work tool to have been called, which asked the
+		// wrong question: calling a tool is a poor proxy for advancing, and it
+		// could not tell an agent chatting to itself from one waiting on a
+		// decision. Those need opposite treatment, and both were stopped in
+		// silence - a goal was seen sitting at 0/11 with nothing saying why.
+		// An agent that needs the user now says so by blocking, and a blocked
+		// goal takes no continuations.
 		if (
 			!isToolUseAssistantMessage(message)
 			&& core.state.goal?.status === "active"
 			&& core.state.goal.autoContinue
-			&& core.goalWorkToolCalledThisTurn
 		) {
 			core.queueContinuation(ctx);
 		}
