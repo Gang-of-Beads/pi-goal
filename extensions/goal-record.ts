@@ -4,7 +4,7 @@ export type GoalEventKind = "checkpoint" | "stale";
 export const CHECKPOINT_KIND: GoalEventKind = "checkpoint";
 /** Goal creation mode used by the /goal and /sisyphus commands. */
 export type GoalMode = "goal" | "sisyphus";
-export type GoalFocusReason = "created" | "selected" | "unfocused" | "resumed" | "completed" | "cleared" | "aborted" | "migrated";
+export type GoalFocusReason = "created" | "selected" | "unfocused" | "resumed" | "completed" | "cleared" | "aborted" | "migrated" | "restored";
 
 export type TaskStatus = "pending" | "complete" | "skipped";
 

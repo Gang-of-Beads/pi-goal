@@ -18,6 +18,7 @@ import { shouldArmPostCompactReminder, shouldInjectPostCompactReminder } from ".
 import { formatTokenValue } from "./goal-core.ts";
 import { loadGoalSettings, invalidateGoalSettingsCache } from "./goal-settings.ts";
 import { budgetLine, budgetRemaining } from "./goal-accounting.ts";
+import { focusEntryNeededAfterCompaction } from "./goal-focus-durability.ts";
 import { asRecord, nowIso, type AssistantMessageLike, type GoalRecord } from "./goal-record.ts";
 import { goalSelectorLabel } from "./goal-pool.ts";
 import { invalidateGoalPoolCache } from "./storage/goal-files.ts";
@@ -362,6 +363,13 @@ export function registerGoalEvents(core: GoalCore): void {
 	pi.on("session_compact", async (_event, ctx) => {
 		core.goalService.flushTurn(ctx); // P1-3: persist any buffered transaction before reload
 		if (core.state.goal) core.persist(ctx);
+		// Focus lives in the transcript, not in the goal file: a custom entry the
+		// rebuild finds by scanning backwards. Compaction replaces the transcript
+		// with prose, which may name the goal but is not the entry being looked
+		// for, so the focus is silently dropped. It survives in memory until the
+		// next reload, which is why the loss looked arbitrary - work continued
+		// against a goal that no longer recorded any of it.
+		if (focusEntryNeededAfterCompaction(core)) core.appendFocusEntry(core.focusedGoalId, "restored");
 		core.beginAccounting();
 		// Arm a deterministic compaction summary for the next agent turn.
 		// This replaces the generic reminder with artifact-backed state.
