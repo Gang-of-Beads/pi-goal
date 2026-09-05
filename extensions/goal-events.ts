@@ -23,7 +23,7 @@ import { asRecord, nowIso, type AssistantMessageLike, type GoalRecord } from "./
 import { goalSelectorLabel } from "./goal-pool.ts";
 import { invalidateGoalPoolCache } from "./storage/goal-files.ts";
 import { checkpointTriggerPrompt } from "./prompts/goal-prompts.ts";
-import { GUARD_STOP_REASONS } from "./goal-runtime.ts";
+import { abortPauseDecision, GUARD_STOP_REASONS, readBranchEntries } from "./goal-runtime.ts";
 import { consumeOracleFollowupMarker, hasPendingOracleAdviceForFocusedGoal } from "./goal-oracle.ts";import {
 	goalPrompt,
 	staleContinuationPrompt,
@@ -207,7 +207,7 @@ export function registerGoalEvents(core: GoalCore): void {
 		core.touchGoalActivity(); // F5
 		core.accountProgress(ctx, { completedTurnTokens: tokens });
 
-		if (isAbortedAssistantMessage(message)) {
+		if (isAbortedAssistantMessage(message) && abortPauseDecision(readBranchEntries(ctx)) === "pause") {
 			core.pauseActiveGoal(ctx);
 			return;
 		}
@@ -304,7 +304,7 @@ export function registerGoalEvents(core: GoalCore): void {
 	});
 
 	pi.on("message_end", async (event, ctx) => {
-		if (isAbortedAssistantMessage(event.message)) core.pauseActiveGoal(ctx);
+		if (isAbortedAssistantMessage(event.message) && abortPauseDecision(readBranchEntries(ctx)) === "pause") core.pauseActiveGoal(ctx);
 		const raw = asRecord(event.message);
 		if (raw?.role === "custom" && raw.customType === GOAL_EVENT_ENTRY && raw.display !== false) {
 			return { message: { ...event.message, display: false } as typeof event.message };
@@ -543,7 +543,10 @@ export function registerGoalEvents(core: GoalCore): void {
 		if (!core.state.goal || core.state.goal.status !== "active" || !core.state.goal.autoContinue) return;
 		if (endedGoalId && core.state.goal.id !== endedGoalId) return;
 		if (!core.reconcileFocusedGoalFromDisk(ctx)) return;
-		if (hasAbortedAssistantMessage(event.messages) || ctx.signal?.aborted) {
+		if (
+			(hasAbortedAssistantMessage(event.messages) || ctx.signal?.aborted)
+			&& abortPauseDecision(readBranchEntries(ctx)) === "pause"
+		) {
 			core.pauseActiveGoal(ctx);
 			return;
 		}

@@ -249,13 +249,44 @@ export function trailingAskWithoutAnswer(entries: readonly unknown[]): boolean {
 }
 
 /** The branch this session is on, or nothing when the host cannot supply it. */
-function branchEntries(ctx: ExtensionContext): readonly unknown[] {
+export function readBranchEntries(ctx: ExtensionContext): readonly unknown[] {
 	try {
 		const manager = (ctx as { sessionManager?: { getBranch?: () => readonly unknown[] } }).sessionManager;
 		return manager?.getBranch?.() ?? [];
 	} catch {
 		return [];
 	}
+}
+
+/**
+ * Whether an aborted run inside the ask-answer wake window stops the turn
+ * instead of pausing the goal.
+ *
+ * WHY: pi-web's `ask_user` ends its run by design, the submitted answers
+ * arrive as a custom message that wakes a fresh turn, and an abort landing
+ * on that fresh turn (a stop tap racing the submit round-trip, a second
+ * device) is not a decision about the goal. The wake window is exactly "the
+ * newest custom entry on the branch is the answers delivery": no checkpoint
+ * has been injected since, so the goal has not re-engaged yet. Once a
+ * checkpoint or any other goal custom entry lands after the answers, an
+ * abort reads as a deliberate stop again and pauses. Measured live: answers
+ * closed 07:09:33.800Z, a `POST /abort` landed 07:09:35.497Z, and the goal
+ * paused with stopReason "user" nobody chose.
+ */
+export type AbortPauseDecision = "pause" | "turn-stop-only";
+
+export function abortPauseDecision(entries: readonly unknown[]): AbortPauseDecision {
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = asRecord(entries[index]);
+		if (!entry) continue;
+		if (entry.type !== "custom_message") continue;
+		return entry.customType === PI_WEB_ASK_ANSWERS_CUSTOM_TYPE ? "turn-stop-only" : "pause";
+	}
+	return "pause";
+}
+
+function branchEntries(ctx: ExtensionContext): readonly unknown[] {
+	return readBranchEntries(ctx);
 }
 
 const POST_STOP_ALLOWED = new Set<string>(POST_STOP_ALLOWED_TOOLS);
