@@ -41,6 +41,25 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 /** Round-trip budget for one in-process probe. */
 export const DEFAULT_BACKGROUND_PROBE_TIMEOUT_MS = 1_000;
 
+/**
+ * How old an active run's own evidence may be before it stops holding the
+ * goal's continuation.
+ *
+ * Both registries report what they believe is running, and both can keep a
+ * husk: a child whose process died without a terminal transition stays
+ * "running" forever, and the goal then waits out the whole deferral cap on
+ * every checkpoint. A run that has genuinely been working for longer than this
+ * keeps the goal quiet through its own progress instead - the cap remains the
+ * backstop for registries that report no timestamps at all.
+ */
+export const STALE_RUN_EVIDENCE_MS = 10 * 60_000;
+
+function startedWithinWindow(value: unknown, now: number): boolean {
+	const startedAt = typeof value === "number" && Number.isFinite(value) ? value : undefined;
+	if (startedAt === undefined) return true;
+	return now - startedAt < STALE_RUN_EVIDENCE_MS;
+}
+
 // Wire constants mirrored from the sibling extensions. They are not
 // dependencies of this package; the exact shapes are pinned by
 // tests/goal-background-deferral.test.ts.
@@ -132,7 +151,11 @@ export async function probeSubagentRunsActive(
 	const data = asRecord(envelope.data);
 	const fleet = asRecord(data?.fleet);
 	const totalActive = fleet?.totalActive;
-	return typeof totalActive === "number" && Number.isFinite(totalActive) && totalActive > 0;
+	if (typeof totalActive !== "number" || !Number.isFinite(totalActive) || totalActive <= 0) return false;
+	const entries = Array.isArray(fleet?.entries) ? fleet.entries : [];
+	if (entries.length === 0) return true;
+	const now = Date.now();
+	return entries.some((entry) => startedWithinWindow(asRecord(entry)?.startedAt, now));
 }
 
 /**
@@ -157,7 +180,12 @@ export async function probeBackgroundTasksActive(
 	if (!envelope || envelope.schema_version !== BG_RESPONSE_SCHEMA || envelope.ok !== true) return false;
 	const result = asRecord(envelope.result);
 	const tasks = Array.isArray(result?.tasks) ? result.tasks : [];
-	return tasks.some((task) => asRecord(task)?.status === "running");
+	const now = Date.now();
+	return tasks.some((task) => {
+		const snapshot = asRecord(task);
+		if (snapshot?.status !== "running") return false;
+		return startedWithinWindow(snapshot.startTime, now);
+	});
 }
 
 export interface ProbeActiveBackgroundWorkOptions {

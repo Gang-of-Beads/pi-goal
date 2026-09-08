@@ -35,8 +35,14 @@ export const BACKGROUND_BUSY_POLL_MS = 2_000;
  * after this long the follow-up goes out through the unchanged guard path and
  * the user is notified once. A user message also always clears the wait
  * (before_agent_start cancels queued continuations on user-driven turns).
+ * unanswered human must not stall the goal forever. Fifteen minutes was the
+ * original bound and it was far too patient: a husk run inside a live registry
+ * made every checkpoint wait a quarter of an hour while the session sat idle
+ * with an active goal on screen. Three minutes still lets ordinary background
+ * work finish (the poll delivers the moment it does) and bounds the damage of
+ * a lost run to something a person can sit through.
  */
-export const MAX_BACKGROUND_DEFERRAL_MS = 15 * 60_000;
+export const MAX_BACKGROUND_DEFERRAL_MS = 3 * 60_000;
 
 /**
  * How many checkpoints may pass without the goal changing before the runtime
