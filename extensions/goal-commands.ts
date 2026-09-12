@@ -373,8 +373,11 @@ export function registerGoalCommands(core: GoalCore): void {
 		const resumeGate = validateResumeGoal(core.state.goal);
 		if (!resumeGate.ok) {
 			if (resumeGate.message.includes("already running")) {
-				// Benign no-op: the goal is running; nothing for the user to fix.
-				ctx.ui.notify(resumeGate.message, "info");
+				// The reader (or the panel's Continue button) asked to resume a
+				// running goal: re-arm the continuation now instead of a benign
+				// no-op - the request means "work it again".
+				core.armFocusedContinuation(ctx);
+				ctx.ui.notify("Goal continuation queued.", "info");
 			} else {
 				reportGuardBlock(ctx, resumeGate.message);
 			}
