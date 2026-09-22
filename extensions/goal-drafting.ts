@@ -242,7 +242,7 @@ export function registerDraftingTools(core: GoalCore): void {
 		parameters: Type.Object({
 			question: Type.String({ description: "The question to ask." }),
 			options: Type.Optional(Type.Array(Type.String({ description: "A concise answer option." }))),
-			recommended: Type.Optional(Type.Integer({ minimum: 0, description: "Zero-based recommended option." })),
+			recommended: Type.Optional(Type.Integer({ description: "Zero-based recommended option." })),
 			allow_custom: Type.Optional(Type.Boolean({ description: "Allow a custom answer; defaults to true." })),
 		}, { additionalProperties: false }),
 		async execute(_id, params, _signal, _update, ctx) {
@@ -271,7 +271,7 @@ export function registerDraftingTools(core: GoalCore): void {
 				question: Type.String({ description: "Question for the user." }),
 				context: Type.Optional(Type.String({ description: "Optional short context." })),
 				options: Type.Array(Type.String({ description: "Answer option." })),
-				recommended: Type.Optional(Type.Integer({ minimum: 0 })),
+				recommended: Type.Optional(Type.Integer()),
 				allow_custom: Type.Optional(Type.Boolean()),
 			})),
 		}, { additionalProperties: false }),

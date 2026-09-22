@@ -119,7 +119,7 @@ const OracleAdviceSchema = Type.Object({
 		}),
 		{ minItems: 1, maxItems: 4 },
 	),
-	recommendedIndex: Type.Integer({ minimum: 0, maximum: 3 }),
+	recommendedIndex: Type.Integer({ description: "Zero-based index of the recommended option (0-3)." }),
 	unresolvedQuestions: Type.Array(Type.String({ maxLength: 400 }), { maxItems: 6 }),
 	disposition: Type.Union([
 		Type.Literal("actionable"),

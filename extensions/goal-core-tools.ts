@@ -176,7 +176,7 @@ pi.registerTool(defineTool({
 	parameters: Type.Object({
 		objective: Type.String({ description: "Full goal text. For Sisyphus goals this MUST include the user's numbered steps + per-step done criteria, taken faithfully from the user's input. Length is capped by the `max objective length` goal setting (0/unset = no limit)." }),
 		mode: Type.Optional(StringEnum(["regular", "sisyphus"] as const, { description: "Goal mode. Defaults to regular. Use sisyphus only when the user explicitly invoked Sisyphus mode." })),
-		token_budget: Type.Optional(Type.Integer({ minimum: 1, description: "Optional token budget in whole tokens. Accept it only when the user explicitly supplied a budget; never invent one." })),
+		token_budget: Type.Optional(Type.Integer({ description: "Optional token budget in whole tokens, at least 1. Accept it only when the user explicitly supplied a budget; never invent one." })),
 	}, { additionalProperties: false }),
 	executionMode: "sequential",
 	async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
