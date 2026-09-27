@@ -33,6 +33,32 @@ export interface TaskConfirmationResult {
 
 export const TASK_CONFIRMATION_TITLE = "Task list confirmation";
 
+/** The most proposal lines the screen shows; the same bound the TUI component draws. */
+export const CONFIRMATION_MAX_BODY = 16;
+
+/**
+ * What this screen *is*, for a host that renders its own card.
+ *
+ * pi-web reads `web` off the custom call's options and draws a heading, the proposal
+ * text and the options as real buttons, while the component below keeps drawing the
+ * terminal frame for every other host. pi ignores the unknown key.
+ */
+export function webScreen(proposalText: string, selectedIndex: number): {
+	kind: "menu";
+	title: string;
+	body: string[];
+	options: string[];
+	current: number;
+} {
+	return {
+		kind: "menu",
+		title: TASK_CONFIRMATION_TITLE,
+		body: proposalText.split("\n").slice(0, CONFIRMATION_MAX_BODY),
+		options: TASK_CONFIRMATION_OPTIONS.map((option) => option.label),
+		current: selectedIndex,
+	};
+}
+
 export const TASK_CONFIRMATION_OPTIONS: ReadonlyArray<{ label: string; value: TaskConfirmationResult["decision"]; description: string }> = [
 	{
 		label: "Confirm task list",
@@ -181,6 +207,12 @@ async function showTaskListConfirmationDialog(ctx: ExtensionContext, proposalTex
 				minWidth: 50,
 				maxHeight: "60%",
 			},
+			// pi-web addition: the terminal component draws for a terminal, and this is
+			// what it *means*. pi ignores the unknown key, so the TUI is unaffected and
+			// the browser renders its own card - heading, proposal text, real buttons -
+			// instead of a dump of the frame. Spread, because the option type predates
+			// the key and an object literal would be excess-property checked.
+			...({ web: webScreen(proposalText, 0) } as Record<string, unknown>),
 		},
 	);
 }
