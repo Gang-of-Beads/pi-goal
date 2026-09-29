@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { formatQuestionnaireAnswers, runGoalQuestionnaire, showProposalDialog } from "../extensions/goal-questionnaire.ts";
 import { showTaskConfirmation } from "../extensions/goal-task-confirmation.ts";
+import { fitsQuestionsCard } from "../extensions/web-questions.ts";
 
 /**
  * pi-web draws a declared screen as its Questions card and never mounts the
@@ -97,7 +98,7 @@ test("a question the reader skipped is reported as unanswered, not left out", as
 
 test("a declaration the card would refuse is not sent, so the terminal screen stands alone", async () => {
 	const { ctx, declared } = piWebUi(undefined);
-	await runGoalQuestionnaire(ctx, [{ id: "scope", question: "Scope?", context: "x".repeat(8_001), options: ["A"] }]);
+	await runGoalQuestionnaire(ctx, [{ id: "scope", question: "Scope?", context: "x".repeat(32_001), options: ["A"] }]);
 	assert.deepEqual(declared, [undefined]);
 });
 
@@ -105,4 +106,13 @@ test("blank context is no detail, and a text-only question keeps its text box", 
 	const { ctx, declared } = piWebUi({ answers: [] });
 	await runGoalQuestionnaire(ctx, [{ id: "notes", question: "Notes?", context: "   ", options: [], allowCustom: false }]);
 	assert.deepEqual((declared[0] as { questions: unknown[] }).questions, [{ id: "notes", question: "Notes?", options: [] }]);
+});
+
+test("a large draft proposal still declares, and duplicate ids never do", async () => {
+	const { ctx, declared } = piWebUi({ answers: [] });
+	await showProposalDialog(ctx, "x".repeat(20_000), "goal", true);
+	assert.equal((declared[0] as { kind: string }).kind, "questions");
+	const q = { id: "a", question: "A?", options: [{ value: "0", label: "zero" }] };
+	assert.equal(fitsQuestionsCard([q, q]), false);
+	assert.equal(fitsQuestionsCard([{ ...q, options: [{ value: "0", label: "zero" }, { value: "0", label: "again" }] }]), false);
 });

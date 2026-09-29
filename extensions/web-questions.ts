@@ -47,15 +47,17 @@ export function questionsOption(ctx: ExtensionContext, title: string, questions:
 }
 
 /** pi-web's limits for a declared question (its daemon's `declaredScreen`). */
-const LIMITS = { questions: 20, options: 12, id: 128, text: 1_000, detail: 8_000 };
+const LIMITS = { questions: 20, options: 12, id: 128, text: 1_000, detail: 32_000 };
 
 export function fitsQuestionsCard(questions: readonly WebQuestion[]): boolean {
 	const fits = (text: string, max: number): boolean => text.trim() !== "" && text.length <= max;
-	return questions.length > 0 && questions.length <= LIMITS.questions && questions.every((question) =>
+	const unique = (values: readonly string[]): boolean => new Set(values).size === values.length;
+	return questions.length > 0 && questions.length <= LIMITS.questions && unique(questions.map((question) => question.id)) && questions.every((question) =>
 		fits(question.id, LIMITS.id)
 		&& fits(question.question, LIMITS.text)
 		&& (question.detail === undefined || fits(question.detail, LIMITS.detail))
 		&& question.options.length <= LIMITS.options
+		&& unique(question.options.map((option) => option.value))
 		&& question.options.every((option) => fits(option.value, LIMITS.id) && fits(option.label, LIMITS.text) && (option.detail === undefined || fits(option.detail, LIMITS.text))));
 }
 
