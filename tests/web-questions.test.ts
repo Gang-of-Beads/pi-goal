@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { runGoalQuestionnaire, showProposalDialog } from "../extensions/goal-questionnaire.ts";
+import { formatQuestionnaireAnswers, runGoalQuestionnaire, showProposalDialog } from "../extensions/goal-questionnaire.ts";
 import { showTaskConfirmation } from "../extensions/goal-task-confirmation.ts";
 
 /**
@@ -86,4 +86,23 @@ test("a host that does not list questions gets no declaration", async () => {
 	const ctx = { hasUI: true, cwd: "/test", ui: { custom: async (_factory: unknown, options?: { web?: unknown }) => { declared.push(options?.web); return { questions: [], answers: [], cancelled: true }; } } } as unknown as Parameters<typeof runGoalQuestionnaire>[0];
 	await runGoalQuestionnaire(ctx, [{ id: "scope", question: "Scope?", options: ["A"] }]);
 	assert.deepEqual(declared, [undefined]);
+});
+
+test("a question the reader skipped is reported as unanswered, not left out", async () => {
+	const { ctx } = piWebUi({ answers: [{ id: "scope", values: ["0"] }] });
+	const result = await runGoalQuestionnaire(ctx, [{ id: "scope", question: "Scope?", options: ["A"] }, { id: "risk", question: "Risk?", options: ["low"] }]);
+	assert.equal(result.cancelled, false);
+	assert.match(formatQuestionnaireAnswers(result), /\*\*Q:\*\* Scope\?[\s\S]*\*\*A:\*\* A[\s\S]*\*\*Q:\*\* Risk\?[\s\S]*\*\*A:\*\* \(left unanswered\)/);
+});
+
+test("a declaration the card would refuse is not sent, so the terminal screen stands alone", async () => {
+	const { ctx, declared } = piWebUi(undefined);
+	await runGoalQuestionnaire(ctx, [{ id: "scope", question: "Scope?", context: "x".repeat(8_001), options: ["A"] }]);
+	assert.deepEqual(declared, [undefined]);
+});
+
+test("blank context is no detail, and a text-only question keeps its text box", async () => {
+	const { ctx, declared } = piWebUi({ answers: [] });
+	await runGoalQuestionnaire(ctx, [{ id: "notes", question: "Notes?", context: "   ", options: [], allowCustom: false }]);
+	assert.deepEqual((declared[0] as { questions: unknown[] }).questions, [{ id: "notes", question: "Notes?", options: [] }]);
 });

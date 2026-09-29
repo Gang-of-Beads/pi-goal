@@ -275,13 +275,21 @@ export function normalizeQuestionnaireQuestions(rawQuestions: GoalQuestionnaireQ
 	});
 }
 
+/**
+ * The answers as the model reads them. A question the reader skipped says so: pi-web's
+ * Questions card can send some answers and not others, and a missing entry would read
+ * as a question that was never asked.
+ */
 export function formatQuestionnaireAnswers(result: GoalQuestionnaireResult): string {
-	return result.answers.map((answer) => {
-		const question = result.questions.find((q) => q.id === answer.id);
-		const lines = [`**Q:** ${answer.question}`];
+	const answered = result.answers.map((answer) => ({ answer, question: result.questions.find((q) => q.id === answer.id) }));
+	const skipped = result.questions
+		.filter((question) => !result.answers.some((answer) => answer.id === question.id))
+		.map((question) => ({ answer: undefined, question }));
+	return [...answered, ...skipped].map(({ answer, question }) => {
+		const lines = [`**Q:** ${answer?.question ?? question?.question ?? ""}`];
 		if (question?.context) lines.push(`\n${question.context}`);
 		if (question && question.options.length > 0) lines.push(`\nOptions: ${question.options.join(" / ")}`);
-		lines.push(`\n**A:** ${answer.answer}`);
+		lines.push(`\n**A:** ${answer?.answer ?? "(left unanswered)"}`);
 		return lines.join("");
 	}).join("\n\n---\n\n");
 }
@@ -361,9 +369,9 @@ export function questionnaireDeclaration(questions: GoalQuestionnaireQuestion[],
 	const declared: WebQuestion[] = questions.map((question) => ({
 		id: question.id,
 		question: question.question,
-		...(question.context === undefined || question.context === "" ? {} : { detail: question.context }),
+		...(question.context === undefined || question.context.trim() === "" ? {} : { detail: question.context }),
 		options: question.options.map((label, index) => ({ value: String(index), label, ...(index === question.recommended ? { detail: "Recommended" } : {}) })),
-		...(question.allowCustom === false ? { custom: false as const } : {}),
+		...(question.allowCustom === false && question.options.length > 0 ? { custom: false as const } : {}),
 	}));
 	if (auditorToggleInit === undefined) return declared;
 	return [...declared, {
