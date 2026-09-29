@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { hostDrawsQuestions, questionsOption, readWebAnswers, type WebAnswers, type WebQuestion } from "./web-questions.ts";
 
 
 export type GoalDraftingFocus = "goal" | "sisyphus";
@@ -347,6 +348,46 @@ async function runQuestionnaireWithBasicDialogs(
 		answers.push({ id: question.id, question: question.question, answer, wasCustom });
 	}
 	return { questions, answers, cancelled: false, auditorEnabled: auditorToggleInit?.defaultEnabled };
+}
+
+const AUDITOR_QUESTION_ID = "pi-goal.auditor";
+
+/**
+ * The questionnaire as pi-web's Questions card: one question per question, options
+ * keyed by index (the model writes the labels, so they can be long or repeat), and
+ * the TUI's `a` toggle as a last On/Off question that keeps its default unanswered.
+ */
+export function questionnaireDeclaration(questions: GoalQuestionnaireQuestion[], auditorToggleInit?: { defaultEnabled: boolean }): WebQuestion[] {
+	const declared: WebQuestion[] = questions.map((question) => ({
+		id: question.id,
+		question: question.question,
+		...(question.context === undefined || question.context === "" ? {} : { detail: question.context }),
+		options: question.options.map((label, index) => ({ value: String(index), label, ...(index === question.recommended ? { detail: "Recommended" } : {}) })),
+		...(question.allowCustom === false ? { custom: false as const } : {}),
+	}));
+	if (auditorToggleInit === undefined) return declared;
+	return [...declared, {
+		id: AUDITOR_QUESTION_ID,
+		question: "Completion auditor",
+		detail: `An independent auditor checks the goal before it can close. It is ${auditorToggleInit.defaultEnabled ? "on" : "off"} unless you choose otherwise.`,
+		options: [{ value: "on", label: "On" }, { value: "off", label: "Off" }],
+		custom: false,
+	}];
+}
+
+/** What the reader sent back, in the result the terminal dialog would have given. Nothing answered reads as cancelled. */
+export function questionnaireFromWeb(questions: GoalQuestionnaireQuestion[], web: WebAnswers, auditorToggleInit?: { defaultEnabled: boolean }): GoalQuestionnaireResult {
+	const byId = new Map(web.answers.map((answer) => [answer.id, answer]));
+	const answers = questions.flatMap((question): GoalQuestionnaireAnswer[] => {
+		const answer = byId.get(question.id);
+		const chosen = answer?.values[0] === undefined ? undefined : question.options[Number(answer.values[0])];
+		if (chosen !== undefined) return [{ id: question.id, question: question.question, answer: chosen, wasCustom: false }];
+		const typed = answer?.otherText?.trim() ?? "";
+		return typed === "" ? [] : [{ id: question.id, question: question.question, answer: typed, wasCustom: true }];
+	});
+	const auditor = byId.get(AUDITOR_QUESTION_ID)?.values[0];
+	const auditorEnabled = auditorToggleInit === undefined ? undefined : auditor === undefined ? auditorToggleInit.defaultEnabled : auditor === "on";
+	return { questions, answers, cancelled: answers.length === 0, auditorEnabled };
 }
 
 export const DIALOG_UNAVAILABLE_HINT = "This host cannot display goal-drafting dialogs (ui.custom is unavailable outside pi's terminal UI). Set PI_GOAL_AUTO_CONFIRM=1 to confirm proposals without a dialog, or run the draft from the pi TUI.";
@@ -999,13 +1040,19 @@ function advanceAfterAnswer() {
 				tui.setShowHardwareCursor(v && inputMode);
 			},
 		};
-	});
+	}, questionsOption(ctx, questions.length === 1 ? questions[0]!.question : "Goal questions", questionnaireDeclaration(questions, auditorToggleInit)));
+	const web = readWebAnswers(result);
+	if (web !== undefined) return questionnaireFromWeb(questions, web, auditorToggleInit);
 	// `ctx.hasUI` only reports that a UI context is installed, not that it can
 	// render a TUI component. Hosts embedding pi behind a non-terminal UI (a
 	// browser, for one) install a real UI context - so `hasUI` is true - while
 	// `ui.custom` remains the SDK's headless default and resolves to undefined.
 	// Reading `.cancelled` off that crashed every drafting tool on those hosts.
 	if (result !== undefined) return result;
+	// A host that drew the Questions card resolves undefined only when the reader's
+	// card closed unanswered; asking again through select/input would be the second
+	// showing of one dialog.
+	if (hostDrawsQuestions(ctx)) return { questions, answers: [], cancelled: true, auditorEnabled: auditorToggleInit?.defaultEnabled };
 	// `ctx.hasUI` only reports that a UI context is installed, not that it can
 	// render a TUI component, so a host with a non-terminal UI lands here with
 	// `hasUI === true` and an undefined result. Falling back keeps drafting

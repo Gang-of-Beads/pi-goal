@@ -3,6 +3,7 @@ import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { GoalTask } from "./goal-record.ts";
 import { borderedLine, dialogInnerWidth, horizontalRule } from "./widgets/dialog-scaffold.ts";
+import { hostDrawsQuestions, questionsOption, readWebAnswers, type WebAnswers, type WebQuestion } from "./web-questions.ts";
 
 /** Render a task tree for confirmation dialogs (structural view). */
 export function renderConfirmationTasks(tasks: readonly GoalTask[], indent: number): string[] {
@@ -33,30 +34,20 @@ export interface TaskConfirmationResult {
 
 export const TASK_CONFIRMATION_TITLE = "Task list confirmation";
 
-/** The most proposal lines the screen shows; the same bound the TUI component draws. */
-export const CONFIRMATION_MAX_BODY = 16;
-
-/**
- * What this screen *is*, for a host that renders its own card.
- *
- * pi-web reads `web` off the custom call's options and draws a heading, the proposal
- * text and the options as real buttons, while the component below keeps drawing the
- * terminal frame for every other host. pi ignores the unknown key.
- */
-export function webScreen(proposalText: string, selectedIndex: number): {
-	kind: "menu";
-	title: string;
-	body: string[];
-	options: string[];
-	current: number;
-} {
+/** The confirmation as pi-web's Questions card: the proposal as the detail, the two decisions as its options. */
+export function taskConfirmationQuestion(proposalText: string): WebQuestion {
 	return {
-		kind: "menu",
-		title: TASK_CONFIRMATION_TITLE,
-		body: proposalText.split("\n").slice(0, CONFIRMATION_MAX_BODY),
-		options: TASK_CONFIRMATION_OPTIONS.map((option) => option.label),
-		current: selectedIndex,
+		id: "decision",
+		question: TASK_CONFIRMATION_TITLE,
+		detail: proposalText,
+		options: TASK_CONFIRMATION_OPTIONS.map((option) => ({ value: option.value, label: option.label, detail: option.description })),
+		custom: false,
 	};
+}
+
+/** The decision the reader sent back; anything but Confirm keeps the current tasks. */
+export function taskDecisionFromWeb(web: WebAnswers): TaskConfirmationResult {
+	return { decision: web.answers.find((answer) => answer.id === "decision")?.values[0] === "confirm" ? "confirm" : "cancel" };
 }
 
 export const TASK_CONFIRMATION_OPTIONS: ReadonlyArray<{ label: string; value: TaskConfirmationResult["decision"]; description: string }> = [
@@ -83,7 +74,11 @@ export async function showTaskConfirmation(ctx: ExtensionContext, proposalText: 
 		return { decision: "confirm" };
 	}
 	const rendered = await showTaskListConfirmationDialog(ctx, proposalText);
+	const web = readWebAnswers(rendered);
+	if (web !== undefined) return taskDecisionFromWeb(web);
 	if (rendered !== undefined) return rendered;
+	// The reader closed pi-web's card unanswered; a select now would ask twice.
+	if (hostDrawsQuestions(ctx)) return { decision: "cancel" };
 	// `ctx.hasUI` reports that a UI context is installed, not that it can render
 	// a TUI component: a host driving pi from a browser keeps `hasUI` true while
 	// `ui.custom` stays the SDK's headless default and resolves to undefined.
@@ -207,12 +202,7 @@ async function showTaskListConfirmationDialog(ctx: ExtensionContext, proposalTex
 				minWidth: 50,
 				maxHeight: "60%",
 			},
-			// pi-web addition: the terminal component draws for a terminal, and this is
-			// what it *means*. pi ignores the unknown key, so the TUI is unaffected and
-			// the browser renders its own card - heading, proposal text, real buttons -
-			// instead of a dump of the frame. Spread, because the option type predates
-			// the key and an object literal would be excess-property checked.
-			...({ web: webScreen(proposalText, 0) } as Record<string, unknown>),
+			...questionsOption(ctx, TASK_CONFIRMATION_TITLE, [taskConfirmationQuestion(proposalText)]),
 		},
 	);
 }
