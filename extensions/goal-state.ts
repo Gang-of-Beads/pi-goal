@@ -946,6 +946,7 @@ export function createGoalCore(
 				autoContinue: goal.autoContinue,
 				at: goal.createdAt,
 			},
+			{ type: "goal_focused", goalId: goal.id, reason: "created", at: goal.createdAt },
 			...(goal.taskList ? [{
 				type: "task_list_set" as const,
 				goalId: goal.id,
