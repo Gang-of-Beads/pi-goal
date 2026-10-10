@@ -1,0 +1,25 @@
+{
+  "name": "@light4/pi-goal",
+  "version": "0.1.0",
+  "packageManager": "pnpm@12.10.1",
+  "description": "Turn goals into actionable AI tasks with /goal in Pi",
+  "type": "module",
+  "keywords": ["pi-package", "pi-extension", "goal"],
+  "license": "MIT",
+  "files": ["src"],
+  "publishConfig": { "access": "public" },
+  "pi": { "extensions": ["./src/index.ts"] },
+  "scripts": {
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "check": "pnpm typecheck && pnpm test"
+  },
+  "engines": { "node": ">=22.19.0" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.0.4",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
