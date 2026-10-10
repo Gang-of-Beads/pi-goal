@@ -15,11 +15,13 @@
     "check": "pnpm typecheck && pnpm test"
   },
   "engines": { "node": ">=22.19.0" },
-  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "@earendil-works/pi-ai": "*", "typebox": "*" },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^1.1.0",
+    "@earendil-works/pi-ai": "^1.1.0",
     "@types/node": "^22.0.0",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "typebox": "^1.0.0"
   }
 }
