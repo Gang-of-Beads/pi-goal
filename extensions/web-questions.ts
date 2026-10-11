@@ -39,11 +39,53 @@ export function hostDrawsQuestions(ctx: ExtensionContext): boolean {
  * otherwise. Typed loosely because pi's option type predates the key and an object
  * literal would be excess-property checked.
  *
- * A declaration pi-web refuses draws the terminal frame, so one that would not fit
- * is not sent: the terminal screen is then the honest choice, not a surprise.
+ * For a host that draws the card, the card is the whole dialog (the owner's rule,
+ * reported again on 2026-10-12): pi-web draws the terminal frame for a declaration it
+ * refuses, so the questions are fitted to the card first, and a set that cannot be
+ * fitted is never shown at all ({@link questionsRefusal}; the caller stops first).
  */
 export function questionsOption(ctx: ExtensionContext, title: string, questions: WebQuestion[]): Record<string, unknown> | undefined {
-	return hostDrawsQuestions(ctx) && fitsQuestionsCard(questions) ? { web: { kind: "questions", title, questions } } : undefined;
+	if (!hostDrawsQuestions(ctx)) return undefined;
+	const fitted = fitQuestions(questions);
+	return "refused" in fitted ? undefined : { web: { kind: "questions", title, questions: fitted.questions } };
+}
+
+/** Why a host that draws the card cannot be shown these questions, or nothing when it can (or draws no card). */
+export function questionsRefusal(ctx: ExtensionContext, questions: WebQuestion[]): string | undefined {
+	if (!hostDrawsQuestions(ctx)) return undefined;
+	const fitted = fitQuestions(questions);
+	return "refused" in fitted ? fitted.refused : undefined;
+}
+
+function cut(text: string, max: number): string {
+	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+/**
+ * The questions brought inside the card's bounds, or why they cannot be. A question too
+ * long for its line moves whole into the detail, ahead of the context; a detail or an
+ * option text past its bound is cut with an ellipsis. Too many questions or options, or a
+ * blank question, cannot be fitted without losing what was asked.
+ */
+function fitQuestions(questions: readonly WebQuestion[]): { questions: WebQuestion[] } | { refused: string } {
+	if (questions.length > LIMITS.questions) return { refused: `${questions.length} questions; pi-web's card takes at most ${LIMITS.questions}` };
+	const crowded = questions.find((question) => question.options.length > LIMITS.options);
+	if (crowded !== undefined) return { refused: `"${cut(crowded.question, 80)}" has ${crowded.options.length} options; pi-web's card takes at most ${LIMITS.options}` };
+	const fitted = questions.map((question) => {
+		const long = question.question.length > LIMITS.text;
+		const detail = long ? [question.question, question.detail].filter(Boolean).join("\n\n") : question.detail;
+		return {
+			...question,
+			question: cut(question.question, LIMITS.text),
+			...(detail === undefined ? {} : { detail: cut(detail, LIMITS.detail) }),
+			options: question.options.map((option) => ({
+				...option,
+				label: cut(option.label, LIMITS.text),
+				...(option.detail === undefined ? {} : { detail: cut(option.detail, LIMITS.text) }),
+			})),
+		};
+	});
+	return fitsQuestionsCard(fitted) ? { questions: fitted } : { refused: "a question or an option is blank, or two share an id" };
 }
 
 /** pi-web's limits for a declared question (its daemon's `declaredScreen`). */

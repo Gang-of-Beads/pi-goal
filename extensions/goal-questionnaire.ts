@@ -1,6 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { hostDrawsQuestions, questionsOption, readWebAnswers, type WebAnswers, type WebQuestion } from "./web-questions.ts";
+import { hostDrawsQuestions, questionsOption, questionsRefusal, readWebAnswers, type WebAnswers, type WebQuestion } from "./web-questions.ts";
 
 
 export type GoalDraftingFocus = "goal" | "sisyphus";
@@ -416,6 +416,8 @@ export async function runGoalQuestionnaire(ctx: ExtensionContext, rawQuestions: 
 	}
 
 	const questions = normalizeQuestionnaireQuestions(rawQuestions);
+	const refusal = questionsRefusal(ctx, questionnaireDeclaration(questions, auditorToggleInit));
+	if (refusal !== undefined) throw new Error(`The goal questions were not shown: ${refusal}. Ask again within those bounds.`);
 	const isMulti = questions.length > 1;
 	const totalTabs = questions.length + 1;
 

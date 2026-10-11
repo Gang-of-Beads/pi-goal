@@ -96,10 +96,18 @@ test("a question the reader skipped is reported as unanswered, not left out", as
 	assert.match(formatQuestionnaireAnswers(result), /\*\*Q:\*\* Scope\?[\s\S]*\*\*A:\*\* A[\s\S]*\*\*Q:\*\* Risk\?[\s\S]*\*\*A:\*\* \(left unanswered\)/);
 });
 
-test("a declaration the card would refuse is not sent, so the terminal screen stands alone", async () => {
+test("a host that draws the card never gets the terminal screen: long text is fitted, too many options is not shown", async () => {
 	const { ctx, declared } = piWebUi(undefined);
 	await runGoalQuestionnaire(ctx, [{ id: "scope", question: "Scope?", context: "x".repeat(32_001), options: ["A"] }]);
-	assert.deepEqual(declared, [undefined]);
+	const detail = (declared[0] as { questions: Array<{ detail: string }> }).questions[0]!.detail;
+	assert.equal(detail.length, 32_000);
+	assert.ok(detail.endsWith("…"));
+	const crowded = piWebUi(undefined);
+	await assert.rejects(
+		runGoalQuestionnaire(crowded.ctx, [{ id: "pick", question: "Pick?", options: Array.from({ length: 13 }, (_, index) => `option ${index}`) }]),
+		/not shown: "Pick\?" has 13 options/,
+	);
+	assert.deepEqual(crowded.declared, []);
 });
 
 test("blank context is no detail, and a text-only question keeps its text box", async () => {
