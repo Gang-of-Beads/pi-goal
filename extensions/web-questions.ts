@@ -1,15 +1,16 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
- * pi-web's native Questions card for a `ctx.ui.custom` screen.
+ * pi-web's native interactive card for a `ctx.ui.custom` screen.
  *
  * pi-web mirrored the terminal component as a text dump, and the reader had to
  * close it before the native select/input fallback appeared - the same dialog,
- * twice. A host that lists "questions" in `ctx.ui.piWebScreens` draws the
- * declaration below as its Questions card and never mounts the component; the
- * custom call then resolves with the reader's {@link WebAnswers}, or `undefined`
- * when the card closed unanswered. pi ignores the unknown option, so the terminal
- * keeps drawing the component.
+ * twice. A host that lists "card" in `ctx.ui.piWebScreens` draws the declaration
+ * below (`web: { kind: "card", fields }`, each question a choice field, or a typed
+ * field when it has no options) and never mounts the component; the custom call
+ * then resolves with the card's values keyed by field id, read back here as
+ * {@link WebAnswers}, or `undefined` when the card closed unanswered. pi ignores
+ * the unknown option, so the terminal keeps drawing the component.
  */
 export interface WebQuestion {
 	id: string;
@@ -31,7 +32,21 @@ export interface WebAnswers {
 
 export function hostDrawsQuestions(ctx: ExtensionContext): boolean {
 	const screens: unknown = Reflect.get(ctx.ui, "piWebScreens");
-	return Array.isArray(screens) && screens.includes("questions");
+	return Array.isArray(screens) && screens.includes("card");
+}
+
+/** One question as a field of pi-web's card: a choice with a Custom option unless it takes no typed answer, or a typed field when it offers no options. */
+function cardField(question: WebQuestion): Record<string, unknown> {
+	const described = question.detail === undefined ? {} : { detail: question.detail };
+	if (question.options.length === 0) return { type: "input", id: question.id, label: question.question, multiline: true, ...described };
+	return {
+		type: "choice",
+		id: question.id,
+		label: question.question,
+		...described,
+		options: question.options,
+		...(question.custom === false ? {} : { other: "choice" }),
+	};
 }
 
 /**
@@ -47,7 +62,7 @@ export function hostDrawsQuestions(ctx: ExtensionContext): boolean {
 export function questionsOption(ctx: ExtensionContext, title: string, questions: WebQuestion[]): Record<string, unknown> | undefined {
 	if (!hostDrawsQuestions(ctx)) return undefined;
 	const fitted = fitQuestions(questions);
-	return "refused" in fitted ? undefined : { web: { kind: "questions", title, questions: fitted.questions } };
+	return "refused" in fitted ? undefined : { web: { kind: "card", title, fields: fitted.questions.map(cardField) } };
 }
 
 /** Why a host that draws the card cannot be shown these questions, or nothing when it can (or draws no card). */
@@ -103,19 +118,22 @@ export function fitsQuestionsCard(questions: readonly WebQuestion[]): boolean {
 		&& question.options.every((option) => fits(option.value, LIMITS.id) && fits(option.label, LIMITS.text) && (option.detail === undefined || fits(option.detail, LIMITS.text))));
 }
 
-/** The reader's answers, when `value` is what the Questions card sent. */
+/** The reader's answers, when `value` is what the card sent: `{ values: { [id]: { selected, other? } | { text } } }`. */
 export function readWebAnswers(value: unknown): WebAnswers | undefined {
 	if (typeof value !== "object" || value === null || Reflect.has(value, "cancelled")) return undefined;
-	const answers: unknown = Reflect.get(value, "answers");
-	if (!Array.isArray(answers) || !answers.every(isWebAnswer)) return undefined;
-	return { answers };
+	const values: unknown = Reflect.get(value, "values");
+	if (typeof values !== "object" || values === null || Array.isArray(values)) return undefined;
+	const answers = Object.entries(values).map(([id, entry]) => webAnswer(id, entry));
+	return answers.every((answer): answer is WebAnswer => answer !== undefined) ? { answers } : undefined;
 }
 
-function isWebAnswer(value: unknown): value is WebAnswer {
-	if (typeof value !== "object" || value === null) return false;
-	const values: unknown = Reflect.get(value, "values");
-	const otherText: unknown = Reflect.get(value, "otherText");
-	return typeof Reflect.get(value, "id") === "string"
-		&& Array.isArray(values) && values.every((entry) => typeof entry === "string")
-		&& (otherText === undefined || typeof otherText === "string");
+function webAnswer(id: string, entry: unknown): WebAnswer | undefined {
+	if (typeof entry !== "object" || entry === null) return undefined;
+	const text: unknown = Reflect.get(entry, "text");
+	if (typeof text === "string") return { id, values: [], otherText: text };
+	const selected: unknown = Reflect.get(entry, "selected");
+	const other: unknown = Reflect.get(entry, "other");
+	if (!Array.isArray(selected) || !selected.every((pick) => typeof pick === "string")) return undefined;
+	if (other !== undefined && typeof other !== "string") return undefined;
+	return { id, values: selected, ...(other === undefined ? {} : { otherText: other }) };
 }

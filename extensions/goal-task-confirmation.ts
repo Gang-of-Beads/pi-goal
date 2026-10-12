@@ -34,7 +34,7 @@ export interface TaskConfirmationResult {
 
 export const TASK_CONFIRMATION_TITLE = "Task list confirmation";
 
-/** The confirmation as pi-web's Questions card: the proposal as the detail, the two decisions as its options. */
+/** The confirmation as pi-web's interactive card: the proposal as the detail, the two decisions as its options. */
 export function taskConfirmationQuestion(proposalText: string): WebQuestion {
 	return {
 		id: "decision",

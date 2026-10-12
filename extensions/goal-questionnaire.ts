@@ -277,7 +277,7 @@ export function normalizeQuestionnaireQuestions(rawQuestions: GoalQuestionnaireQ
 
 /**
  * The answers as the model reads them. A question the reader skipped says so: pi-web's
- * Questions card can send some answers and not others, and a missing entry would read
+ * interactive card can send some answers and not others, and a missing entry would read
  * as a question that was never asked.
  */
 export function formatQuestionnaireAnswers(result: GoalQuestionnaireResult): string {
@@ -361,7 +361,7 @@ async function runQuestionnaireWithBasicDialogs(
 const AUDITOR_QUESTION_ID = "pi-goal.auditor";
 
 /**
- * The questionnaire as pi-web's Questions card: one question per question, options
+ * The questionnaire as pi-web's interactive card: one question per question, options
  * keyed by index (the model writes the labels, so they can be long or repeat), and
  * the TUI's `a` toggle as a last On/Off question that keeps its default unanswered.
  */
@@ -1059,7 +1059,7 @@ function advanceAfterAnswer() {
 	// `ui.custom` remains the SDK's headless default and resolves to undefined.
 	// Reading `.cancelled` off that crashed every drafting tool on those hosts.
 	if (result !== undefined) return result;
-	// A host that drew the Questions card resolves undefined only when the reader's
+	// A host that drew the interactive card resolves undefined only when the reader's
 	// card closed unanswered; asking again through select/input would be the second
 	// showing of one dialog.
 	if (hostDrawsQuestions(ctx)) return { questions, answers: [], cancelled: true, auditorEnabled: auditorToggleInit?.defaultEnabled };
