@@ -388,6 +388,17 @@ Recovery preserves every entry id and parent link, keeps all non-goal lines
 byte-identical (including malformed lines), and is idempotent. Rollback is
 the timestamped `.backup-*` file created next to the session.
 
+
+## PI WEB
+
+[PI WEB](https://github.com/Gang-of-Beads/pi-web) draws an extension's screen as a native card when the extension declares one. When `ctx.ui.piWebScreens` includes `"card"`, pi-goal's dialogs declare PI WEB's interactive card (`web: { kind: "card", fields }`) and PI WEB never mounts their terminal components:
+
+- The guided-draft questions (`goal_question`, `goal_questionnaire`): one `choice` field per question, the recommended option marked, with a Custom option unless the question takes no custom answer; a question without options is a typed field.
+- The draft proposal: the objective as the field's detail, Confirm / Continue chatting / Cancel as its options, and the independent auditor as a second page when it applies.
+- The task-list confirmation: the proposed tasks as the detail, Confirm task list / Keep current tasks as the options.
+
+A card closed unanswered counts as cancelled, never as a reason to ask again through `select()`. A dialog too large for the card (more than 20 questions, or more than 12 options in one) is not shown. In pi's terminal, and in any host that does not list `"card"`, the dialogs are the terminal components as before.
+
 ## Commands
 
 ```text
