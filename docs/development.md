@@ -41,6 +41,22 @@ Pi 直接加载 TypeScript，无需构建产物。`pnpm check` 执行类型检�
 
 用例预置 goal JSON，不调用模型或外部服务、无需凭据。尚未覆盖真实 AI 的澄清提问、执行与回滚，也不验证终端视觉和键盘交互；这些不能由 RPC 面板测试替代。
 
-当前保持最小工具链，尚未配置 lint、format、prek hooks 或 CI。
+## Git hooks
+
+使用 `prek.toml` 配置 pre-commit 检查。首次克隆后运行：
+
+```sh
+prek install
+```
+
+提交时检查尾随空格、文件末尾换行、大文件、合并冲突，以及 JSON / TOML / YAML 格式。源码、E2E 或相关配置变更时，还会执行类型检查和现有 E2E 测试；不向这些命令传入文件名。
+
+手动检查所有已跟踪文件：
+
+```sh
+prek run --all-files
+```
+
+当前未额外配置 lint、format 工具或 CI。
 
 [返回 README](../README.md)

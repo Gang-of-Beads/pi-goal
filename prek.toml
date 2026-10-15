@@ -1,0 +1,32 @@
+#:schema https://www.schemastore.org/prek.json
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  { id = "check-added-large-files" },
+  { id = "check-merge-conflict" },
+  { id = "check-json" },
+  { id = "check-toml" },
+  { id = "check-yaml", args = ["--allow-multiple-documents"] },
+]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "typecheck"
+name = "TypeScript typecheck"
+entry = "pnpm typecheck"
+language = "system"
+pass_filenames = false
+files = '^(src/.*\.ts|e2e/.*\.(ts|mjs)|package\.json|pnpm(-lock|-workspace)?\.yaml|tsconfig\.json|prek\.toml)$'
+
+[[repos.hooks]]
+id = "e2e"
+name = "Pi RPC E2E tests"
+entry = "pnpm test:e2e"
+language = "system"
+pass_filenames = false
+files = '^(src/.*\.ts|e2e/.*\.(ts|mjs)|package\.json|pnpm(-lock|-workspace)?\.yaml|tsconfig\.json|prek\.toml)$'
