@@ -1,12 +1,12 @@
 <div align="center">
-  <img src="pi-goal-x.png" alt="pi-goal-x logo" width="560">
+  <img src="https://raw.githubusercontent.com/Gang-of-Beads/pi-goal/main/pi-goal-x.png" alt="pi-goal-x logo" width="560">
 </div>
 
 <div align="center">
   <a href="https://pi.dev/packages" target="_blank" rel="noopener noreferrer">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="assets/badge-dark.svg">
-      <img src="assets/badge-light.svg" alt="TOP 1% of Pi coding agent packages: #45 of 5,380 by downloads, as of Aug 2026" width="420">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Gang-of-Beads/pi-goal/main/assets/badge-dark.svg">
+      <img src="https://raw.githubusercontent.com/Gang-of-Beads/pi-goal/main/assets/badge-light.svg" alt="TOP 1% of Pi coding agent packages: #45 of 5,380 by downloads, as of Aug 2026" width="420">
     </picture>
   </a>
 </div>
@@ -90,8 +90,10 @@ The settings menu controls task support, verification contracts, subtask depth, 
 Install from npm:
 
 ```bash
-pi install npm:pi-goal-x
+pi install npm:@gang-of-beads/pi-goal
 ```
+
+This is the Gang of Beads distribution. Choose one source: remove an existing Git or upstream npm installation before switching to avoid loading the extension twice.
 
 Install from a local checkout:
 

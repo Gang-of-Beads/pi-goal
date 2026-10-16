@@ -124,6 +124,12 @@ export function registerGoalEvents(core: GoalCore): void {
 	const { pi } = core;
 	let continuationAfterSettleFor: string | null = null;
 	let networkErrorRecoveryAfterSettleFor: string | null = null;
+	/** A stale checkpoint run aborts itself; that abort must not pause the goal the user focused since. */
+	const pausesOnAbort = (ctx: Parameters<typeof readBranchEntries>[0]): boolean => {
+		const checkpointGoalId = core.runtime.getCheckpointGoalId();
+		if (checkpointGoalId !== null && !core.isActionableContinuationGoal(checkpointGoalId)) return false;
+		return abortPauseDecision(readBranchEntries(ctx)) === "pause";
+	};
 
 	pi.on("context", async (event) => {
 		const messages = compactGoalCheckpointContext(event.messages, core.state.goal);
@@ -207,7 +213,7 @@ export function registerGoalEvents(core: GoalCore): void {
 		core.touchGoalActivity(); // F5
 		core.accountProgress(ctx, { completedTurnTokens: tokens });
 
-		if (isAbortedAssistantMessage(message) && abortPauseDecision(readBranchEntries(ctx)) === "pause") {
+		if (isAbortedAssistantMessage(message) && pausesOnAbort(ctx)) {
 			core.pauseActiveGoal(ctx);
 			return;
 		}
@@ -304,7 +310,7 @@ export function registerGoalEvents(core: GoalCore): void {
 	});
 
 	pi.on("message_end", async (event, ctx) => {
-		if (isAbortedAssistantMessage(event.message) && abortPauseDecision(readBranchEntries(ctx)) === "pause") core.pauseActiveGoal(ctx);
+		if (isAbortedAssistantMessage(event.message) && pausesOnAbort(ctx)) core.pauseActiveGoal(ctx);
 		const raw = asRecord(event.message);
 		if (raw?.role === "custom" && raw.customType === GOAL_EVENT_ENTRY && raw.display !== false) {
 			return { message: { ...event.message, display: false } as typeof event.message };
@@ -391,7 +397,9 @@ export function registerGoalEvents(core: GoalCore): void {
 	pi.on("before_agent_start", async (event, ctx) => {
 		core.advanceTurnSeq();
 		const currentSystemPrompt = () => ctx.getSystemPrompt?.() || event.systemPrompt;
-		const incomingGoalId = extractGoalIdFromInjectedMessage(event.prompt ?? "");
+		const incomingGoalId = event.messageType === "custom"
+			? goalEventMessageId(event.message)
+			: extractGoalIdFromInjectedMessage(event.prompt ?? "");
 		// Several prompt enrichments may need the same ledger snapshot. Keep one
 		// local read for this hook instead of repeatedly traversing the cached
 		// ledger when rejection and post-compaction steering overlap.
@@ -421,12 +429,14 @@ export function registerGoalEvents(core: GoalCore): void {
 			}
 			core.runtime.setCheckpoint(null);
 		} else {
-			// A user-driven turn — clear any queued continuation so we don't
-			// double-fire after the user's own message returns. Also reset the
-			// autoContinue nudge state so the user always gets a fresh chain.
 			core.runtime.setCheckpoint(null);
-			core.clearContinuationState();
-			networkErrorRecoveryAfterSettleFor = null;
+			if (event.messageType !== "custom") {
+				// A user-driven turn — clear any queued continuation so we don't
+				// double-fire after the user's own message returns. Also reset the
+				// autoContinue nudge state so the user always gets a fresh chain.
+				core.clearContinuationState();
+				networkErrorRecoveryAfterSettleFor = null;
+			}
 		}
 
 		if (!core.state.goal) {
@@ -545,7 +555,7 @@ export function registerGoalEvents(core: GoalCore): void {
 		if (!core.reconcileFocusedGoalFromDisk(ctx)) return;
 		if (
 			(hasAbortedAssistantMessage(event.messages) || ctx.signal?.aborted)
-			&& abortPauseDecision(readBranchEntries(ctx)) === "pause"
+			&& pausesOnAbort(ctx)
 		) {
 			core.pauseActiveGoal(ctx);
 			return;

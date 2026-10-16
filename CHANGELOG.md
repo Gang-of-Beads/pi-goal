@@ -2,6 +2,11 @@
 
 All notable changes to pi-goal-x are documented here.
 
+## 0.30.3 - 2026-10-16
+
+- Publish the Gang of Beads distribution as `@gang-of-beads/pi-goal`. Goal tools, stored goal files and the `pi-goal-x-recover` command keep their existing names.
+- Support Pi 1.2 and later, which also start extension-triggered goal checkpoints through `before_agent_start`. A checkpoint is recognised from its custom message; other extension wake-ups no longer reset the continuation chain, no longer inherit a stale checkpoint's tool block, and a stale checkpoint that aborts itself no longer pauses the goal you focused since.
+
 ## [0.30.2] — 2026-08-24
 
 ### Added

@@ -2,7 +2,9 @@
   "version": 1,
   "note": "Expected test-entry manifest for the runner self-check (npm run test:selfcheck). Regenerate with: node scripts/run-unit-tests.mjs --write-manifest",
   "unitFiles": [
+    ".tests/answer-wake-abort.test.ts",
     ".tests/fault-injection.test.ts",
+    ".tests/focus-survives-compaction.test.ts",
     ".tests/goal-accounting-runtime.test.ts",
     ".tests/goal-activity.test.ts",
     ".tests/goal-audit-dashboard.test.ts",
@@ -13,6 +15,7 @@
     ".tests/goal-command-palette.test.ts",
     ".tests/goal-compaction.test.ts",
     ".tests/goal-continuation-dedup.test.ts",
+    ".tests/goal-continuation-pending-ask.test.ts",
     ".tests/goal-core-tools.test.ts",
     ".tests/goal-core.test.ts",
     ".tests/goal-dashboard-golden.test.ts",
@@ -40,6 +43,7 @@
     ".tests/goal-notifications.test.ts",
     ".tests/goal-oracle.test.ts",
     ".tests/goal-payload-separation.test.ts",
+    ".tests/goal-pending-ask.test.ts",
     ".tests/goal-policy.test.ts",
     ".tests/goal-pool-snapshot.test.ts",
     ".tests/goal-pool.test.ts",
@@ -52,6 +56,7 @@
     ".tests/goal-session-health.test.ts",
     ".tests/goal-settings-race.test.ts",
     ".tests/goal-settings.test.ts",
+    ".tests/goal-stale-background-evidence.test.ts",
     ".tests/goal-stale-continuation-golden.test.ts",
     ".tests/goal-status.test.ts",
     ".tests/goal-surface-baseline.test.ts",
@@ -67,6 +72,7 @@
     ".tests/goal-unfocused-banner.test.ts",
     ".tests/goal-update-objective.test.ts",
     ".tests/goal-widget.test.ts",
+    ".tests/idle-turn-policy.test.ts",
     ".tests/network-error-backoff.test.ts",
     ".tests/no-status-refresh-timer.test.ts",
     ".tests/overflow-regression.test.ts",
@@ -74,7 +80,8 @@
     ".tests/session-checkpoint-recovery.test.ts",
     ".tests/session-state-growth.test.ts",
     ".tests/task-list-overlay.test.ts",
-    ".tests/verification-contract.test.ts"
+    ".tests/verification-contract.test.ts",
+    ".tests/web-questions.test.ts"
   ],
   "integrationFiles": [
     ".tests/integration/extension.test.ts"
