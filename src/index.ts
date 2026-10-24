@@ -88,6 +88,34 @@ export function restoreGoals(entries: readonly SessionEntry[]): GoalState {
   return state;
 }
 
+/**
+ * Validate goal files one at a time so a single bad file cannot hide every goal in a workspace.
+ * Duplicate display IDs (e.g. from concurrent sessions) keep the earliest UUIDv7 and renumber later goals.
+ */
+export function validateGoals(goals: readonly Goal[]): { goals: Goal[]; nextId: number; errors: string[]; renumbered: string[] } {
+  const valid: Goal[] = [];
+  const errors: string[] = [];
+  for (const goal of goals) {
+    const id = goal?.id;
+    const nextId = Number.isSafeInteger(id) && id > 0 ? id + 1 : 1;
+    const [restored] = restoreGoals([{ type: "custom", customType: STATE_TYPE, data: { goals: [goal], nextId } } as SessionEntry]).goals;
+    if (restored) valid.push(restored);
+    else errors.push(`${goal?.uuid ?? "unknown"}.json: invalid goal data`);
+  }
+  let max = Math.max(0, ...valid.map((goal) => goal.id));
+  const seen = new Set<number>();
+  const renumbered: string[] = [];
+  for (const goal of valid) {
+    if (seen.has(goal.id)) {
+      const previous = goal.id;
+      goal.id = ++max;
+      renumbered.push(`#${previous} → #${goal.id} (${goal.uuid})`);
+    }
+    seen.add(goal.id);
+  }
+  return { goals: valid, nextId: max + 1, errors, renumbered };
+}
+
 function templateFromGoal(goal: Goal): GoalTemplate {
   return {
     title: goal.text, constraints: goal.constraints ?? [], acceptance: goal.acceptance ?? [], todos: (goal.todos ?? []).map((todo) => todo.text),
@@ -172,14 +200,13 @@ export default function goalExtension(pi: ExtensionAPI) {
     persisted = new Map();
     try {
       registerWorkspace(getAgentDir(), ctx.cwd);
-      const goals = storage.load();
-      for (const goal of goals) goal.workspace ??= resolve(ctx.cwd);
-      const nextId = Math.max(0, ...goals.map((goal) => goal.id)) + 1;
-      const snapshot = { type: "custom", customType: STATE_TYPE, data: { goals, nextId } } as SessionEntry;
-      const validated = restoreGoals([snapshot]);
-      if (validated.goals.length !== goals.length) throw new Error("Invalid goal JSON data. Fix the files before editing goals.");
-      state = validated;
-      for (const goal of goals) if (goal.uuid) persisted.set(goal.uuid, JSON.stringify(goal));
+      const loaded = storage.load();
+      for (const goal of loaded.goals) goal.workspace ??= resolve(ctx.cwd);
+      const validated = validateGoals(loaded.goals);
+      state = { goals: validated.goals, nextId: validated.nextId };
+      for (const goal of loaded.goals) if (goal.uuid) persisted.set(goal.uuid, JSON.stringify(goal));
+      for (const error of [...loaded.errors, ...validated.errors]) ctx.ui.notify(`目标文件无效，已跳过（文件未修改，请手动修复）：${error}`, "warning");
+      if (validated.renumbered.length) ctx.ui.notify(`目标编号重复，已重新编号：${validated.renumbered.join("，")}`, "warning");
       save(ctx);
     } catch (error) {
       state = { goals: [], nextId: 1 };
@@ -202,8 +229,13 @@ export default function goalExtension(pi: ExtensionAPI) {
     return id;
   }
 
-  function add(text: string, ctx: ExtensionContext): Goal {
+  function add(text: string, ctx: ExtensionContext): Goal | undefined {
     const now = new Date().toISOString();
+    // Reject text that could not be reloaded later (e.g. over the 64 KiB template limit).
+    try { serializeGoalTemplate(templateFromGoal({ id: 1, text: text.trim(), status: "clarifying" })); } catch (error) {
+      ctx.ui.notify(`目标文本无效，未创建：${String(error)}`, "warning");
+      return undefined;
+    }
     const goal: Goal = { id: allocateId(ctx), uuid: uuidv7(), workspace: resolve(ctx.cwd), sessionId: ctx.sessionManager.getSessionId(), createdAt: now, updatedAt: now, text: text.trim(), status: "clarifying", todos: [], answers: [], planConfirmed: false };
     state.goals.push(goal);
     save(ctx);
@@ -476,14 +508,22 @@ export default function goalExtension(pi: ExtensionAPI) {
   function sections(ctx: ExtensionContext) {
     const workspace = resolve(ctx.cwd);
     const all = [...state.goals];
-    for (const directory of knownWorkspaces(getAgentDir())) {
+    let directories: string[] = [];
+    try {
+      const registry = knownWorkspaces(getAgentDir());
+      directories = registry.workspaces;
+      for (const error of registry.errors) ctx.ui.notify(`Workspace 索引无效，已跳过：${error}`, "warning");
+    } catch (error) {
+      ctx.ui.notify(`无法读取 workspace 索引：${String(error)}`, "warning");
+    }
+    for (const directory of directories) {
       if (directory === workspace) continue;
       try {
-        const goals = new GoalStorage(directory).load();
-        const nextId = Math.max(0, ...goals.map((goal) => goal.id)) + 1;
-        const snapshot = { type: "custom", customType: STATE_TYPE, data: { goals, nextId } } as SessionEntry;
-        if (restoreGoals([snapshot]).goals.length !== goals.length) throw new Error("Invalid goal data");
-        all.push(...goals.map((goal) => ({ ...goal, workspace: directory })));
+        const loaded = new GoalStorage(directory).load();
+        const validated = validateGoals(loaded.goals);
+        const errors = [...loaded.errors, ...validated.errors];
+        if (errors.length) ctx.ui.notify(`workspace ${directory} 中有 ${errors.length} 个目标文件无效，已跳过`, "warning");
+        all.push(...validated.goals.map((goal) => ({ ...goal, workspace: directory })));
       } catch (error) {
         ctx.ui.notify(`无法读取 workspace ${directory}：${String(error)}`, "warning");
       }
@@ -633,6 +673,10 @@ export default function goalExtension(pi: ExtensionAPI) {
       const text = await ctx.ui.editor(`修改目标 #${goal.id}`, goal.text);
       if (!isCurrent()) return "exit";
       if (text?.trim()) {
+        try { serializeGoalTemplate(templateFromGoal({ ...goal, text: text.trim() })); } catch (error) {
+          ctx.ui.notify(`目标文本无效，未修改：${String(error)}`, "warning");
+          return "done";
+        }
         goal.text = text.trim();
         goal.planConfirmed = false;
         goal.status = "clarifying";
@@ -702,7 +746,8 @@ export default function goalExtension(pi: ExtensionAPI) {
           if (selectedScope === "＋ 新增目标") {
             const text = await ctx.ui.editor("新增目标（接下来由 AI 提问澄清并确认 TODO）");
             if (!isCurrent()) return;
-            if (text?.trim() && clarify(add(text, ctx), ctx)) return;
+            const goal = text?.trim() ? add(text, ctx) : undefined;
+            if (goal && clarify(goal, ctx)) return;
             continue;
           }
           scope = labels.indexOf(selectedScope);
@@ -718,7 +763,7 @@ export default function goalExtension(pi: ExtensionAPI) {
           if (!isCurrent()) return;
           if (text?.trim()) {
             const goal = add(text, ctx);
-            if (clarify(goal, ctx)) return;
+            if (goal && clarify(goal, ctx)) return;
           }
           continue;
         }
@@ -802,7 +847,7 @@ export default function goalExtension(pi: ExtensionAPI) {
       return;
     }
     const goal = add(text, ctx);
-    if (!clarify(goal, ctx)) ctx.ui.notify(`目标 #${goal.id} 已保存为待澄清，可在 /goal 面板继续。`, "info");
+    if (goal && !clarify(goal, ctx)) ctx.ui.notify(`目标 #${goal.id} 已保存为待澄清，可在 /goal 面板继续。`, "info");
   }
 
   pi.registerCommand("goal", {
