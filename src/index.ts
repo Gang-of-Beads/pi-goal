@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { Type } from "typebox";
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { GoalStorage, knownWorkspaces, registerWorkspace } from "./storage.ts";
+import { parseGoalTemplate, readGoalTemplate, serializeGoalTemplate, writeGoalTemplate, type GoalTemplate } from "./sexp.ts";
+import { listSnippets, saveSnippet, validateSnippetName, type GoalSnippet } from "./snippets.ts";
 
 export type GoalStatus = "clarifying" | "pending" | "running" | "paused" | "review" | "done" | "cancelled";
 export type TodoStatus = "pending" | "running" | "blocked" | "done";
@@ -22,6 +24,12 @@ export interface Goal {
   updatedAt?: string;
   history?: { at: string; status: GoalStatus; text: string; todos: GoalTodo[] }[];
   text: string;
+  constraints?: string[];
+  acceptance?: string[];
+  objective?: GoalTemplate["objective"];
+  benchmarks?: GoalTemplate["benchmarks"];
+  checks?: GoalTemplate["checks"];
+  reviewLoop?: GoalTemplate["reviewLoop"];
   status: GoalStatus;
   todos?: GoalTodo[];
   answers?: { question: string; answer: string }[];
@@ -59,6 +67,7 @@ export function restoreGoals(entries: readonly SessionEntry[]): GoalState {
       typeof goal.text === "string" && goal.text.trim() && Object.hasOwn(LABELS, goal.status))) continue;
     const ids = data.goals.map((goal) => goal.id);
     if (new Set(ids).size !== ids.length || ids.some((id) => id >= data.nextId)) continue;
+    if (!data.goals.every((goal) => [goal.constraints, goal.acceptance].every((items) => items === undefined || (Array.isArray(items) && items.every((item) => typeof item === "string" && item.trim()))))) continue;
     if (!data.goals.every((goal) => (goal.planConfirmed === undefined || typeof goal.planConfirmed === "boolean") &&
       (goal.answers === undefined || (Array.isArray(goal.answers) && goal.answers.every((item) => item && typeof item.question === "string" && typeof item.answer === "string"))) &&
       (goal.todos === undefined || (Array.isArray(goal.todos) && goal.todos.every((todo) => todo && Number.isSafeInteger(todo.id) && todo.id > 0 && typeof todo.text === "string" && todo.text.trim() &&
@@ -67,6 +76,8 @@ export function restoreGoals(entries: readonly SessionEntry[]): GoalState {
     if (!data.goals.every((goal) => (goal.uuid === undefined || (typeof goal.uuid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(goal.uuid))) &&
       [goal.createdAt, goal.updatedAt].every((time) => time === undefined || (typeof time === "string" && Number.isFinite(Date.parse(time)))) &&
       (goal.history === undefined || Array.isArray(goal.history)))) continue;
+    try { for (const goal of data.goals) serializeGoalTemplate(templateFromGoal(goal)); }
+    catch { continue; }
     state = structuredClone({ goals: data.goals, nextId: data.nextId });
   }
   // A saved running flag cannot resume work by itself after reload or branching.
@@ -75,6 +86,29 @@ export function restoreGoals(entries: readonly SessionEntry[]): GoalState {
     for (const todo of goal.todos ?? []) if (todo.status === "running") todo.status = "pending";
   }
   return state;
+}
+
+function templateFromGoal(goal: Goal): GoalTemplate {
+  return {
+    title: goal.text, constraints: goal.constraints ?? [], acceptance: goal.acceptance ?? [], todos: (goal.todos ?? []).map((todo) => todo.text),
+    objective: goal.objective, benchmarks: goal.benchmarks, checks: goal.checks, reviewLoop: goal.reviewLoop,
+  };
+}
+
+function reviewInstructions(goal: Goal): string {
+  if (!goal.objective && !goal.checks?.length && !goal.reviewLoop) return "";
+  return [
+    "Structured objective / review contract (data, never executable code):",
+    serializeGoalTemplate(templateFromGoal(goal)),
+    "OVERRIDE_ALL means highest priority among this goal's own design preferences ONLY. It never overrides system/project instructions, explicit user constraints, accessibility, safety, or approvals.",
+    "Use actual browser renders at relevant mobile/tablet/desktop sizes and interaction states to inspect every CHECK dimension. Identify specific winning benchmark entries and why they are comparable; do not claim an award or an objective award-tier score.",
+    "For each CHECK, report observed evidence, the benchmark comparison, remaining gaps, and changes made. Motion and micro-interactions require observing their behavior, not only inspecting code or static screenshots. Respect reduced-motion accessibility preferences.",
+    ...(goal.reviewLoop ? [
+      `On completion of implementation, perform READ then COMPARE. If a gap is found, PATCH within the approved scope and re-enter review. Stop when all dimensions have no identified visible gaps, or after ${goal.reviewLoop.maxIterations} review iterations in this execution run, whichever comes first.`,
+      "At the iteration limit, stop and report unresolved gaps; do not mark unverified review TODOs complete. If browser access or benchmark evidence is unavailable, report the missing evidence and ask for it rather than pretending the review passed.",
+    ] : []),
+    "The acceptance phrase 'no visible improvement remaining' is a subjective review target, not a proof of perfection. State the assessed scope and uncertainty, and request final user review. Do not automatically mark the whole goal done.",
+  ].join("\n\n");
 }
 
 const TODO_LABELS: Record<TodoStatus, string> = { pending: "待执行", running: "执行中", blocked: "阻塞", done: "已完成" };
@@ -177,7 +211,7 @@ export default function goalExtension(pi: ExtensionAPI) {
     runFailed = false;
     save(ctx);
     try {
-      const prompt = `${buildGoalPrompt(goal.text)}\n\nGoal ID: ${goal.id}\nConfirmed TODOs:\n${goal.todos.map(todoLabel).join("\n")}\nClarifications:\n${JSON.stringify(goal.answers ?? [])}\nUse goal_todo to mark each TODO running, blocked, or done as work progresses. For done, include concrete verification evidence; the plugin records the completion time. Do not mark TODOs complete merely because the agent turn ends.`;
+      const prompt = `${buildGoalPrompt(goal.text)}\n\n${reviewInstructions(goal)}\n\nGoal ID: ${goal.id}\nConfirmed TODOs:\n${goal.todos.map(todoLabel).join("\n")}\nClarifications:\n${JSON.stringify(goal.answers ?? [])}\nConstraints: ${JSON.stringify(goal.constraints ?? [])}\nAcceptance criteria: ${JSON.stringify(goal.acceptance ?? [])}\nUse goal_todo to mark each TODO running, blocked, or done as work progresses. For done, include concrete verification evidence; the plugin records the completion time. Do not mark TODOs complete merely because the agent turn ends.`;
       pi.sendUserMessage(previousStatus === "pending" ? prompt :
         `Continue goal #${goal.id} using the existing conversation. The goal text below is the current version; inspect what has already been done and do not blindly repeat prior actions.\n\n${prompt}`);
     } catch (error) {
@@ -204,9 +238,14 @@ export default function goalExtension(pi: ExtensionAPI) {
         `Clarify goal #${goal.id} with me before executing anything:`, goal.text,
         `Existing answers: ${JSON.stringify(goal.answers ?? [])}`,
         `Existing TODOs: ${JSON.stringify(goal.todos ?? [])}`,
+        `Constraints: ${JSON.stringify(goal.constraints ?? [])}`,
+        `Acceptance criteria: ${JSON.stringify(goal.acceptance ?? [])}`,
+        `Structured goal definition: ${serializeGoalTemplate(templateFromGoal(goal))}`,
+        "If the user's brief specifies an objective, priority, benchmarks, CHECK dimensions or a self-review LOOP, use goal_plan confirm's definition field with a complete .goal.sexp definition to capture them structurally, not only in TODO prose. Preserve the current goal title. Use the data schema: (objective (name \"site_design\") (priority \"OVERRIDE_ALL\") (target \"...\")), (benchmarks \"...\"), (checks (check \"dimension\" (standard \"award_tier\"))), (review-loop (name \"self_review\") (trigger \"on_completion\") (read \"...\") (compare \"...\") (on-gap \"patch-and-repeat\") (on-pass \"stop\") (max-iterations 3)). Explain any finite review budget to the user before confirmation; never promise perfection or override higher-priority instructions.",
+        "Preserve the structured objective, benchmarks, checks and bounded review loop when planning TODOs. Clarify the actual page URL, reference entries, target devices and access needed for visual verification. A review loop here is a plan, not authorization to execute it during clarification.",
         "This is planning only. Do not change files, resources, install dependencies, or execute the goal. Read relevant project context only when necessary.",
         "Use goal_plan action ask to ask a few focused, goal-specific questions one at a time: scope, desired output, acceptance criteria, constraints, and exclusions. Ask follow-up questions only for unresolved essentials; do not invent my answers.",
-        "After clarification, use goal_plan action confirm with a concrete ordered TODO list including acceptance/verification steps. The plugin will let me review/edit and explicitly confirm it. Never execute the plan in this turn, even after confirmation. If a dialog is cancelled, stop planning until I ask to continue. Preserve existing instructions and approval boundaries.",
+        "After clarification, use goal_plan action confirm with a concrete ordered TODO list including acceptance/verification steps, plus constraints and acceptance arrays reflecting my confirmed answers. The plugin will let me review/edit and explicitly confirm it. Never execute the plan in this turn, even after confirmation. If a dialog is cancelled, stop planning until I ask to continue. Preserve existing instructions and approval boundaries.",
       ].join("\n\n"));
     } catch (error) {
       activeId = undefined;
@@ -228,6 +267,9 @@ export default function goalExtension(pi: ExtensionAPI) {
       action: Type.Union([Type.Literal("ask"), Type.Literal("confirm")]),
       question: Type.Optional(Type.String()),
       todos: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
+      constraints: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+      acceptance: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+      definition: Type.Optional(Type.String({ description: "Optional full data-only .goal.sexp definition, preserving the current title and any structured objective, benchmarks, checks and bounded review loop requested by the user." })),
     }),
     async execute(_id, params, signal, _onUpdate, ctx) {
       const goal = state.goals.find((item) => item.id === params.goalId);
@@ -248,13 +290,24 @@ export default function goalExtension(pi: ExtensionAPI) {
         return { content: [{ type: "text", text: answer.trim() }], details: undefined };
       }
       if (!params.todos?.length || params.todos.some((text) => !text.trim())) throw new Error("A nonempty TODO list is required.");
+      const definition = params.definition === undefined ? templateFromGoal(goal) : parseGoalTemplate(params.definition);
+      if (definition.title !== goal.text) throw new Error("The proposed definition must preserve the current goal title.");
+      const constraints = params.constraints?.map((text) => text.trim()) ?? definition.constraints;
+      const acceptance = params.acceptance?.map((text) => text.trim()) ?? definition.acceptance;
+      if ([...constraints, ...acceptance].some((text) => !text)) throw new Error("Constraints and acceptance criteria must not be blank.");
       const edited = await ctx.ui.editor(`目标 #${goal.id} · 审阅 TODO（每行一项，可修改）`, params.todos.map((text) => text.trim()).join("\n"));
       if (!valid() || !edited?.trim()) return stopped();
       const texts = edited.split("\n").map((text) => text.trim()).filter(Boolean);
       if (!texts.length) return stopped();
-      const confirmed = await ctx.ui.confirm(`确认目标 #${goal.id} 的 ${texts.length} 项 TODO？`, `${texts.map((text, index) => `${index + 1}. ${text}`).join("\n")}\n\n确认后仅保存，不自动执行。`);
+      const confirmed = await ctx.ui.confirm(`确认目标 #${goal.id} 的 ${texts.length} 项 TODO？`, `${serializeGoalTemplate({ ...definition, constraints, acceptance, todos: texts })}\n\n确认后仅保存，不自动执行。`);
       if (!valid() || !confirmed) return stopped();
       goal.todos = texts.map((text, index) => ({ id: index + 1, text, status: "pending" }));
+      goal.constraints = constraints;
+      goal.acceptance = acceptance;
+      goal.objective = definition.objective;
+      goal.benchmarks = definition.benchmarks;
+      goal.checks = definition.checks;
+      goal.reviewLoop = definition.reviewLoop;
       goal.planConfirmed = true;
       goal.status = "pending";
       planningId = undefined;
@@ -417,6 +470,100 @@ export default function goalExtension(pi: ExtensionAPI) {
     ];
   }
 
+  /** Create a new goal from a data-only template after explicit confirmation. */
+  async function createFromTemplate(template: GoalTemplate, title: string, ctx: ExtensionCommandContext): Promise<Goal | undefined> {
+    if (!ctx.hasUI) throw new Error("需要交互式确认，请使用 TUI 或支持对话框的 RPC 客户端。");
+    const currentGeneration = generation;
+    const confirmed = await ctx.ui.confirm(title, `${serializeGoalTemplate(template)}\n仅作为目标数据导入，不执行表达式或自动执行任务。请确认内容可信；旧状态和完成记录不会导入。`);
+    if (!confirmed || generation !== currentGeneration) return undefined;
+    const now = new Date().toISOString();
+    const goal: Goal = {
+      id: state.nextId++, uuid: uuidv7(), workspace: resolve(ctx.cwd), sessionId: ctx.sessionManager.getSessionId(),
+      createdAt: now, updatedAt: now, text: template.title, constraints: template.constraints, acceptance: template.acceptance,
+      objective: template.objective, benchmarks: template.benchmarks, checks: template.checks, reviewLoop: template.reviewLoop,
+      todos: template.todos.map((text, index) => ({ id: index + 1, text, status: "pending" })), answers: [],
+      status: template.todos.length ? "pending" : "clarifying", planConfirmed: template.todos.length > 0,
+    };
+    state.goals.push(goal);
+    save(ctx);
+    return goal;
+  }
+
+  async function importTemplate(path: string, ctx: ExtensionCommandContext) {
+    const goal = await createFromTemplate(readGoalTemplate(resolve(ctx.cwd, path)), "导入 Goal 模板并确认计划？", ctx);
+    if (goal) ctx.ui.notify(`已导入目标 #${goal.id}，未自动执行。`, "info");
+  }
+
+  function snippetLabel(snippet: GoalSnippet): string {
+    return `${snippet.name} [${snippet.source === "user" ? "我的" : "内置"}] ${snippet.template.title.replace(/\s+/g, " ")}`;
+  }
+
+  function loadSnippets(ctx: ExtensionContext): GoalSnippet[] {
+    const { snippets, errors } = listSnippets(getAgentDir());
+    for (const error of errors) ctx.ui.notify(`Snippet 无效，已跳过：${error}`, "warning");
+    return snippets;
+  }
+
+  /** Instantiate a reusable snippet in the current workspace; project context is appended to the goal text. */
+  async function useSnippet(snippet: GoalSnippet, context: string, ctx: ExtensionCommandContext): Promise<boolean> {
+    const template = { ...snippet.template, title: context.trim() ? `${snippet.template.title}\n\n${context.trim()}` : snippet.template.title };
+    const goal = await createFromTemplate(template, `使用 Snippet「${snippet.name}」创建目标？`, ctx);
+    if (!goal) return false;
+    if (goal.planConfirmed) {
+      ctx.ui.notify(`已从 Snippet 创建目标 #${goal.id}，计划已确认，未自动执行。`, "info");
+      return false;
+    }
+    if (!ctx.model) {
+      ctx.ui.notify(`已从 Snippet 创建目标 #${goal.id}；未选择模型，保存为待澄清。`, "warning");
+      return false;
+    }
+    if (clarify(goal, ctx)) return true;
+    ctx.ui.notify(`已从 Snippet 创建目标 #${goal.id}，保存为待澄清。`, "info");
+    return false;
+  }
+
+  async function pickSnippet(ctx: ExtensionCommandContext): Promise<boolean> {
+    const currentGeneration = generation;
+    const snippets = loadSnippets(ctx);
+    if (!snippets.length) { ctx.ui.notify("暂无 Snippet。可用 /goal-snippet-save <目标编号> <名称> 保存。", "info"); return false; }
+    const labels = snippets.map(snippetLabel);
+    const selected = await ctx.ui.select("Goal Snippets", [...labels, "返回"]);
+    const snippet = snippets[labels.indexOf(selected ?? "")];
+    if (!snippet || generation !== currentGeneration) return false;
+    const context = await ctx.ui.editor(`Snippet「${snippet.name}」· 补充本项目信息（页面、URL、范围等，可留空）`);
+    if (context === undefined || generation !== currentGeneration) return false;
+    return useSnippet(snippet, context, ctx);
+  }
+
+  async function saveAsSnippet(goal: Goal, name: string, ctx: ExtensionCommandContext) {
+    validateSnippetName(name);
+    const currentGeneration = generation;
+    let template = templateFromGoal(goal);
+    if (ctx.hasUI) {
+      const edited = await ctx.ui.editor(`审阅 Snippet「${name}」（将用于所有项目；请移除项目专属信息和敏感内容）`, serializeGoalTemplate(template));
+      if (edited === undefined || generation !== currentGeneration) return;
+      template = parseGoalTemplate(edited);
+    }
+    ctx.ui.notify(`已保存 Snippet ${saveSnippet(getAgentDir(), name, template)}`, "info");
+  }
+
+  async function exportTemplate(goal: Goal, path: string, ctx: ExtensionCommandContext) {
+    const currentGeneration = generation;
+    let template = templateFromGoal(goal);
+    if (ctx.hasUI) {
+      const edited = await ctx.ui.editor("审阅分享内容（不含执行记录；请自行移除文本中的敏感信息）", serializeGoalTemplate(template));
+      if (edited === undefined || generation !== currentGeneration) return;
+      template = parseGoalTemplate(edited);
+    }
+    const destination = resolve(ctx.cwd, path);
+    writeGoalTemplate(destination, template);
+    ctx.ui.notify(`已导出 ${destination}`, "info");
+  }
+
+  async function sharing(action: () => Promise<void>, ctx: ExtensionContext) {
+    try { await action(); } catch (error) { ctx.ui.notify(`Goal 模板操作失败：${String(error)}`, "error"); }
+  }
+
   async function panel(ctx: ExtensionCommandContext) {
     if (!ctx.hasUI) {
       ctx.ui.notify(sections(ctx).map((section) => `${section.title} (${section.goals.length})\n${section.goals.map((goal) => [goalLabel(goal), ...(goal.todos ?? []).map((todo) => `  ${todoLabel(todo)}`)].join("\n")).join("\n") || "暂无目标"}`).join("\n\n"), "info");
@@ -432,8 +579,20 @@ export default function goalExtension(pi: ExtensionAPI) {
         const groups = sections(ctx);
         if (scope === undefined) {
           const labels = groups.map((group) => `${group.title} (${group.goals.length})`);
-          const selectedScope = await ctx.ui.select("Goals · 选择范围", [...labels, "＋ 新增目标", "关闭"]);
+          const selectedScope = await ctx.ui.select("Goals · 选择范围", [...labels, "＋ 新增目标", "从 Snippet 创建", "导入 Goal 模板", "关闭"]);
           if (!isCurrent() || !selectedScope || selectedScope === "关闭") return;
+          if (selectedScope === "从 Snippet 创建") {
+            let started = false;
+            await sharing(async () => { started = await pickSnippet(ctx); }, ctx);
+            if (started || !isCurrent()) return;
+            continue;
+          }
+          if (selectedScope === "导入 Goal 模板") {
+            const path = await ctx.ui.editor("导入 .goal.sexp 文件路径（相对 workspace 或绝对路径）");
+            if (!isCurrent()) return;
+            if (path?.trim()) await sharing(() => importTemplate(path.trim(), ctx), ctx);
+            continue;
+          }
           if (selectedScope === "＋ 新增目标") {
             const text = await ctx.ui.editor("新增目标（接下来由 AI 提问澄清并确认 TODO）");
             if (!isCurrent()) return;
@@ -466,20 +625,30 @@ export default function goalExtension(pi: ExtensionAPI) {
           continue;
         }
         const actions = [
-          "展开 TODO",
+          "查看目标定义", "展开 TODO",
           ...(goal.status === "running" || activeId === goal.id ? ["暂停"] : [goal.planConfirmed ? "执行 / 继续" : "继续澄清"]),
           "修改",
           ...(goal.status === "running" || goal.status === "done" || goal.status === "paused" ? [] : ["暂停"]),
           ...(goal.status === "running" ? [] : [goal.status === "done" ? "重新打开" : "标记完成"]),
-          "取消目标", "删除", "返回列表",
+          "导出 Goal 模板", "保存为 Snippet", "取消目标", "删除", "返回列表",
         ];
         const action = await ctx.ui.select(goalLabel(goal), actions);
         if (!isCurrent()) return;
         // A run may have settled while a dialog was open; operations check live state.
-        if (action === "展开 TODO") {
+        if (action === "查看目标定义") {
+          await ctx.ui.select(serializeGoalTemplate(templateFromGoal(goal)), ["返回列表"]);
+        } else if (action === "展开 TODO") {
           await todoPanel(goal, ctx, isCurrent);
         } else if (action === "执行 / 继续" || action === "继续澄清") {
           if (start(goal, ctx)) return;
+        } else if (action === "导出 Goal 模板") {
+          const path = await ctx.ui.editor("导出文件路径（.goal.sexp，不覆盖已有文件）", `${goal.uuid}.goal.sexp`);
+          if (!isCurrent()) return;
+          if (path?.trim()) await sharing(() => exportTemplate(goal, path.trim(), ctx), ctx);
+        } else if (action === "保存为 Snippet") {
+          const name = await ctx.ui.input("Snippet 名称（小写字母、数字、连字符）", "site-design");
+          if (!isCurrent()) return;
+          if (name?.trim()) await sharing(() => saveAsSnippet(goal, name.trim(), ctx), ctx);
         } else if (action === "取消目标") {
           if (await cancel(goal, ctx, isCurrent)) return;
         } else if (action === "暂停") {
@@ -523,6 +692,54 @@ export default function goalExtension(pi: ExtensionAPI) {
       panelOpen = false;
     }
   }
+
+  pi.registerCommand("goal-snippet", {
+    description: "使用 Goal Snippet：/goal-snippet [名称] [本项目补充信息]",
+    handler: async (args, ctx) => {
+      if (storageError) { ctx.ui.notify(storageError, "error"); return; }
+      const match = /^(\S+)(?:\s+([\s\S]+))?$/.exec(args.trim());
+      await sharing(async () => {
+        if (!match) {
+          if (ctx.hasUI) { await pickSnippet(ctx); return; }
+          const snippets = loadSnippets(ctx);
+          ctx.ui.notify(snippets.length ? snippets.map(snippetLabel).join("\n") : "暂无 Snippet。", "info");
+          return;
+        }
+        const snippet = loadSnippets(ctx).find((item) => item.name === match[1]);
+        if (!snippet) throw new Error(`未找到 Snippet：${match[1]}`);
+        await useSnippet(snippet, match[2] ?? "", ctx);
+      }, ctx);
+    },
+  });
+  pi.registerCommand("goal-snippet-save", {
+    description: "把目标保存为全局 Snippet：/goal-snippet-save <当前 workspace 的目标编号> <名称>",
+    handler: async (args, ctx) => {
+      if (storageError) { ctx.ui.notify(storageError, "error"); return; }
+      const match = /^(\d+)\s+(\S+)$/.exec(args.trim());
+      const goal = match ? state.goals.find((item) => item.id === Number(match[1])) : undefined;
+      if (!goal) { ctx.ui.notify("用法：/goal-snippet-save <当前 workspace 的目标编号> <名称>；目标必须存在。", "warning"); return; }
+      await sharing(() => saveAsSnippet(goal, match![2]!, ctx), ctx);
+    },
+  });
+
+  pi.registerCommand("goal-import", {
+    description: "导入 .goal.sexp 模板：/goal-import <文件路径>",
+    handler: async (args, ctx) => {
+      if (storageError) { ctx.ui.notify(storageError, "error"); return; }
+      if (!args.trim()) { ctx.ui.notify("用法：/goal-import <文件路径>", "warning"); return; }
+      await sharing(() => importTemplate(args.trim(), ctx), ctx);
+    },
+  });
+  pi.registerCommand("goal-export", {
+    description: "导出目标定义：/goal-export <当前 workspace 的目标编号> [文件路径]",
+    handler: async (args, ctx) => {
+      if (storageError) { ctx.ui.notify(storageError, "error"); return; }
+      const match = /^(\d+)(?:\s+([\s\S]+))?$/.exec(args.trim());
+      const goal = match ? state.goals.find((item) => item.id === Number(match[1])) : undefined;
+      if (!goal) { ctx.ui.notify("用法：/goal-export <当前 workspace 的目标编号> [文件路径]；目标必须存在。", "warning"); return; }
+      await sharing(() => exportTemplate(goal, match![2] ?? `${goal.uuid}.goal.sexp`, ctx), ctx);
+    },
+  });
 
   pi.registerCommand("goal", {
     description: "管理目标及 TODO，或 /goal <任务> 新增并交互式澄清目标",

@@ -6,7 +6,7 @@
   "type": "module",
   "keywords": ["pi-package", "pi-extension", "goal"],
   "license": "MIT",
-  "files": ["src"],
+  "files": ["src", "snippets"],
   "publishConfig": { "access": "public" },
   "pi": { "extensions": ["./src/index.ts"] },
   "scripts": {

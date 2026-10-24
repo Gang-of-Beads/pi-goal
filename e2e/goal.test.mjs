@@ -179,6 +179,214 @@ test("real Pi RPC: TODO completion, timestamp, cancellation, restart and deletio
   assert.deepEqual((await readdir(join(fixtureData.workspace, ".pi", "goals"))).filter((file) => file.endsWith(".json")), []);
 });
 
+test("real Pi RPC: S-expression sharing round-trips definitions without execution state", { timeout: 60000 }, async (t) => {
+  const data = await fixture(t);
+  const { rpc, state } = await data.start();
+  const originalPath = await seed(data.workspace, state.sessionId);
+  const original = JSON.parse(await readFile(originalPath, "utf8"));
+  original.text = '目标 "引号" (括号)\n第二行 \\ 路径';
+  original.status = "done";
+  original.constraints = ["不改生产配置"];
+  original.acceptance = ["HTTP 200"];
+  original.todos[0] = { ...original.todos[0], text: '检查 "状态"\n下一步', status: "done", completedAt: new Date().toISOString(), evidence: "SECRET-EVIDENCE" };
+  original.answers = [{ question: "秘密问题", answer: "SECRET-ANSWER" }];
+  await writeFile(originalPath, JSON.stringify(original));
+  await rpc.command("new_session");
+
+  const exportPath = join(data.workspace, "shared goal.goal.sexp");
+  let pending = rpc.command("prompt", { message: `/goal-export 1 ${exportPath}` });
+  const review = await rpc.dialog("editor");
+  assert.ok(review.prefill.includes('(version 1)'));
+  assert.ok(!review.prefill.includes("SECRET"));
+  assert.ok(!review.prefill.includes(original.uuid));
+  assert.ok(!review.prefill.includes(data.workspace));
+  rpc.respond(review, { value: review.prefill });
+  await pending;
+  const exported = await readFile(exportPath, "utf8");
+  assert.equal(exported, review.prefill);
+
+  pending = rpc.command("prompt", { message: `/goal-import ${exportPath}` });
+  const confirmation = await rpc.dialog("confirm");
+  assert.match(confirmation.message, /不执行表达式/);
+  rpc.respond(confirmation, { confirmed: true });
+  await pending;
+  const files = (await readdir(join(data.workspace, ".pi", "goals"))).filter((file) => file.endsWith(".json"));
+  assert.equal(files.length, 2);
+  const importedFile = files.find((file) => file !== `${original.uuid}.json`);
+  const imported = JSON.parse(await readFile(join(data.workspace, ".pi", "goals", importedFile), "utf8"));
+  assert.notEqual(imported.uuid, original.uuid);
+  assert.match(imported.uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.equal(imported.text, original.text);
+  assert.deepEqual(imported.constraints, original.constraints);
+  assert.deepEqual(imported.acceptance, original.acceptance);
+  assert.equal(imported.status, "pending");
+  assert.equal(imported.planConfirmed, true);
+  assert.deepEqual(imported.answers, []);
+  assert.equal(imported.todos[0].text, original.todos[0].text);
+  assert.equal(imported.todos[0].status, "pending");
+  assert.equal(imported.todos[0].completedAt, undefined);
+  assert.equal(imported.todos[0].evidence, undefined);
+  assert.equal((await rpc.command("get_state")).isStreaming, false);
+
+  // Export never overwrites an existing file, even after user review.
+  pending = rpc.command("prompt", { message: `/goal-export 1 ${exportPath}` });
+  const duplicate = await rpc.dialog("editor");
+  rpc.respond(duplicate, { value: duplicate.prefill });
+  await pending;
+  assert.equal(await readFile(exportPath, "utf8"), exported);
+  const failure = await rpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === "error");
+  assert.match(failure.message, /EEXIST/);
+});
+
+test("real Pi RPC: design objective, all CHECK dimensions and bounded review survive import/restart/export", { timeout: 60000 }, async (t) => {
+  const data = await fixture(t);
+  const { rpc } = await data.start();
+  const templatePath = join(root, "snippets/site-design.goal.sexp");
+  let pending = rpc.command("prompt", { message: `/goal-import ${templatePath}` });
+  const confirmation = await rpc.dialog("confirm");
+  assert.match(confirmation.message, /OVERRIDE_ALL/);
+  assert.match(confirmation.message, /max-iterations 3/);
+  rpc.respond(confirmation, { confirmed: true });
+  await pending;
+  const files = await readdir(join(data.workspace, ".pi", "goals"));
+  assert.equal(files.length, 1);
+  const path = join(data.workspace, ".pi", "goals", files[0]);
+  const goal = JSON.parse(await readFile(path, "utf8"));
+  assert.deepEqual(goal.objective, { name: "site_design", priority: "OVERRIDE_ALL", target: "build page to award-tier visual standard" });
+  assert.equal(goal.acceptance[0], "no visible improvement remaining across all CHECK dimensions");
+  assert.deepEqual(goal.checks.map((check) => check.dimension), ["typography", "whitespace", "visual_hierarchy", "color", "motion", "micro_interaction", "responsive", "originality"]);
+  assert.ok(goal.checks.every((check) => check.standard === "award_tier"));
+  assert.equal(goal.benchmarks.length, 3);
+  assert.equal(goal.reviewLoop.trigger, "on_completion");
+  assert.equal(goal.reviewLoop.onGap, "patch-and-repeat");
+  assert.equal(goal.reviewLoop.onPass, "stop");
+  assert.equal(goal.reviewLoop.maxIterations, 3);
+  assert.equal(goal.status, "clarifying");
+  assert.equal(goal.planConfirmed, false);
+  await rpc.close();
+  const restarted = (await data.start()).rpc;
+  ({ pending } = await openGoal(restarted));
+  await restarted.select("查看目标定义");
+  const definition = await restarted.select("返回列表");
+  assert.match(definition.title, /micro_interaction/);
+  assert.match(definition.title, /self_review/);
+  await restarted.select("关闭");
+  await pending;
+  const exportedPath = join(data.workspace, "design.goal.sexp");
+  pending = restarted.command("prompt", { message: `/goal-export 1 ${exportedPath}` });
+  const review = await restarted.dialog("editor");
+  restarted.respond(review, { value: review.prefill });
+  await pending;
+  const exported = await readFile(exportedPath, "utf8");
+  for (const dimension of goal.checks.map((check) => check.dimension)) assert.ok(exported.includes(`(check "${dimension}"`));
+  assert.ok(exported.includes('(on-gap "patch-and-repeat")'));
+  assert.ok(exported.includes('(on-pass "stop")'));
+  assert.ok(exported.includes('(max-iterations 3)'));
+  assert.equal((await restarted.command("get_state")).isStreaming, false);
+});
+
+test("real Pi RPC: snippets are reusable across workspaces, user snippets shadow built-ins and never overwrite", { timeout: 60000 }, async (t) => {
+  const data = await fixture(t);
+  const { rpc } = await data.start();
+
+  // Built-in snippet through the picker, with project-specific context.
+  let pending = rpc.command("prompt", { message: "/goal-snippet" });
+  const list = await rpc.select("site-design");
+  assert.ok(list.options.some((option) => option.startsWith("site-design [\u5185\u7f6e]")));
+  const context = await rpc.dialog("editor");
+  rpc.respond(context, { value: "\u9996\u9875 https://example.test" });
+  const confirmation = await rpc.dialog("confirm");
+  assert.match(confirmation.message, /micro_interaction/);
+  rpc.respond(confirmation, { confirmed: true });
+  await pending;
+  const goalsDirectory = join(data.workspace, ".pi", "goals");
+  let goal = JSON.parse(await readFile(join(goalsDirectory, (await readdir(goalsDirectory))[0]), "utf8"));
+  assert.match(goal.text, /^Build page to award-tier visual standard\n\n\u9996\u9875 https:\/\/example.test$/);
+  assert.equal(goal.checks.length, 8);
+  assert.equal(goal.status, "clarifying");
+  assert.equal((await rpc.command("get_state")).isStreaming, false);
+
+  // Save as a global user snippet (reviewed + edited), refusing duplicates.
+  pending = rpc.command("prompt", { message: "/goal-snippet-save 1 site-design" });
+  const review = await rpc.dialog("editor");
+  rpc.respond(review, { value: review.prefill.replace(/\\n\\n\u9996\u9875 https:\/\/example.test/, "").replace("(max-iterations 3)", "(max-iterations 5)") });
+  await pending;
+  const saved = join(data.agent, "pi-goal", "snippets", "site-design.goal.sexp");
+  const savedContent = await readFile(saved, "utf8");
+  assert.ok(savedContent.includes("(max-iterations 5)"));
+  assert.ok(!savedContent.includes("example.test"));
+  pending = rpc.command("prompt", { message: "/goal-snippet-save 1 site-design" });
+  const duplicate = await rpc.dialog("editor");
+  rpc.respond(duplicate, { value: duplicate.prefill });
+  await pending;
+  const failure = await rpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === "error");
+  assert.match(failure.message, /EEXIST/);
+  assert.equal(await readFile(saved, "utf8"), savedContent);
+
+  await rpc.command("prompt", { message: "/goal-snippet-save 1 Bad_Name" });
+  const invalid = await rpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === "error");
+  assert.match(invalid.message, /Snippet \u540d\u79f0/);
+  await rpc.close();
+
+  // Another workspace sharing the same Pi agent directory sees the user snippet, which shadows the built-in.
+  const other = join(dirname(data.workspace), "other-frontend");
+  await mkdir(other, { recursive: true });
+  const otherRpc = new PiRpc(other, data.agent);
+  t.after(() => otherRpc.close());
+  await otherRpc.command("get_state");
+  pending = otherRpc.command("prompt", { message: "/goal-snippet site-design \u843d\u5730\u9875" });
+  const otherConfirmation = await otherRpc.dialog("confirm");
+  assert.match(otherConfirmation.message, /max-iterations 5/);
+  otherRpc.respond(otherConfirmation, { confirmed: true });
+  await pending;
+  const otherGoals = join(other, ".pi", "goals");
+  goal = JSON.parse(await readFile(join(otherGoals, (await readdir(otherGoals))[0]), "utf8"));
+  assert.equal(goal.workspace, other);
+  assert.equal(goal.reviewLoop.maxIterations, 5);
+  assert.match(goal.text, /\u843d\u5730\u9875$/);
+
+  await otherRpc.command("prompt", { message: "/goal-snippet missing-snippet" });
+  const missing = await otherRpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === "error");
+  assert.match(missing.message, /missing-snippet/);
+
+  // Cancelled use creates nothing.
+  pending = otherRpc.command("prompt", { message: "/goal-snippet site-design" });
+  otherRpc.respond(await otherRpc.dialog("confirm"), { confirmed: false });
+  await pending;
+  assert.equal((await readdir(otherGoals)).filter((file) => file.endsWith(".json")).length, 1);
+});
+
+test("real Pi RPC: invalid or cancelled template imports do not create goals", { timeout: 60000 }, async (t) => {
+  const data = await fixture(t);
+  const { rpc } = await data.start();
+  const path = join(data.workspace, "invalid.goal.sexp");
+  for (const content of [
+    '(goal (version 2) (title "wrong version"))',
+    '(goal (version 1) (title "duplicate") (title "other"))',
+    '(goal (version 1) (title "unknown") (eval "touch marker"))',
+    '(goal (version 1) (title "trailing")) (goal)',
+    '(goal (version 1) (title "unclosed" miss)',
+    '#.(exec "touch marker")',
+    '(goal (version 1) (title "duplicate checks") (checks (check "color" (standard "x")) (check "color" (standard "y"))))',
+    '(goal (version 1) (title "unbounded") (review-loop (name "review") (trigger "on_completion") (read "page") (compare "benchmark") (on-gap "patch-and-repeat") (on-pass "stop") (max-iterations 0)))',
+    '(goal (version 1) (title "bad objective") (objective (name "design") (priority "override-system") (target "page")))',
+    "(".repeat(20) + ")".repeat(20),
+    "x".repeat(65537),
+  ]) {
+    await writeFile(path, content);
+    await rpc.command("prompt", { message: `/goal-import ${path}` });
+    const error = await rpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === "error");
+    assert.match(error.message, /模板操作失败/);
+  }
+  await writeFile(path, '(goal (version 1) (title "cancelled") (todos (todo "do nothing")))');
+  const pending = rpc.command("prompt", { message: `/goal-import ${path}` });
+  const confirmation = await rpc.dialog("confirm");
+  rpc.respond(confirmation, { confirmed: false });
+  await pending;
+  await assert.rejects(readdir(join(data.workspace, ".pi", "goals")), { code: "ENOENT" });
+  assert.equal((await rpc.command("get_state")).isStreaming, false);
+});
+
 test("real Pi RPC: Session / Workspace / all scopes include foreign workspace read-only", { timeout: 60000 }, async (t) => {
   const data = await fixture(t);
   const { rpc, state } = await data.start();
