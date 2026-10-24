@@ -5,11 +5,11 @@
 ## 导出
 
 ```text
-/goal-export 1
-/goal-export 1 templates/health.goal.sexp
+/goal export 1
+/goal export 1 templates/health.goal.sexp
 ```
 
-编号对应当前 workspace 中的目标。默认文件名为 `<uuidv7>.goal.sexp`；路径相对当前 workspace，也可用绝对路径（含空格的路径直接填写，不加引号）。父目录须已存在，已有文件不会覆盖。
+编号对应当前 workspace 中的目标；文件路径必须以 `.goal.sexp` 结尾。别名 `/goal-export` 行为相同。默认文件名为 `<uuidv7>.goal.sexp`；路径相对当前 workspace，也可用绝对路径（含空格的路径直接填写，不加引号）。父目录须已存在，已有文件不会覆盖。
 
 也可在 `/goal` 面板选中目标后选择“导出 Goal 模板”。交互模式会打开内容编辑器，允许审阅、编辑和移除敏感文本；取消则不写文件。非交互模式直接导出定义。
 
@@ -18,7 +18,7 @@
 ## 导入
 
 ```text
-/goal-import templates/health.goal.sexp
+/goal import templates/health.goal.sexp
 ```
 
 或在 `/goal` 的分区首页选择“导入 Goal 模板”。导入会显示完整定义并要求确认：
@@ -89,7 +89,7 @@
 它是内置 [Snippet](snippets.md)，可在任意前端项目中使用：
 
 ```text
-/goal-snippet site-design 首页 https://example.com
+/goal @site-design 首页 https://example.com
 ```
 
 示例不预置已确认 TODO，创建后先澄清实际页面 URL、具体获奖参考作品、设备尺寸、浏览器和参考访问权限，再确认实施与验收 TODO。也可以直接通过 `/goal <任务>` 描述这类目标，AI 在澄清时可通过 `goal_plan` 的 `definition` 字段提出结构化定义，用户确认后保存。

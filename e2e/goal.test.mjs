@@ -194,7 +194,7 @@ test("real Pi RPC: S-expression sharing round-trips definitions without executio
   await rpc.command("new_session");
 
   const exportPath = join(data.workspace, "shared goal.goal.sexp");
-  let pending = rpc.command("prompt", { message: `/goal-export 1 ${exportPath}` });
+  let pending = rpc.command("prompt", { message: `/goal export 1 ${exportPath}` });
   const review = await rpc.dialog("editor");
   assert.ok(review.prefill.includes('(version 1)'));
   assert.ok(!review.prefill.includes("SECRET"));
@@ -205,7 +205,7 @@ test("real Pi RPC: S-expression sharing round-trips definitions without executio
   const exported = await readFile(exportPath, "utf8");
   assert.equal(exported, review.prefill);
 
-  pending = rpc.command("prompt", { message: `/goal-import ${exportPath}` });
+  pending = rpc.command("prompt", { message: `/goal import ${exportPath}` });
   const confirmation = await rpc.dialog("confirm");
   assert.match(confirmation.message, /不执行表达式/);
   rpc.respond(confirmation, { confirmed: true });
@@ -229,7 +229,7 @@ test("real Pi RPC: S-expression sharing round-trips definitions without executio
   assert.equal((await rpc.command("get_state")).isStreaming, false);
 
   // Export never overwrites an existing file, even after user review.
-  pending = rpc.command("prompt", { message: `/goal-export 1 ${exportPath}` });
+  pending = rpc.command("prompt", { message: `/goal export 1 ${exportPath}` });
   const duplicate = await rpc.dialog("editor");
   rpc.respond(duplicate, { value: duplicate.prefill });
   await pending;
@@ -242,7 +242,7 @@ test("real Pi RPC: design objective, all CHECK dimensions and bounded review sur
   const data = await fixture(t);
   const { rpc } = await data.start();
   const templatePath = join(root, "snippets/site-design.goal.sexp");
-  let pending = rpc.command("prompt", { message: `/goal-import ${templatePath}` });
+  let pending = rpc.command("prompt", { message: `/goal import ${templatePath}` });
   const confirmation = await rpc.dialog("confirm");
   assert.match(confirmation.message, /OVERRIDE_ALL/);
   assert.match(confirmation.message, /max-iterations 3/);
@@ -273,7 +273,7 @@ test("real Pi RPC: design objective, all CHECK dimensions and bounded review sur
   await restarted.select("关闭");
   await pending;
   const exportedPath = join(data.workspace, "design.goal.sexp");
-  pending = restarted.command("prompt", { message: `/goal-export 1 ${exportedPath}` });
+  pending = restarted.command("prompt", { message: `/goal export 1 ${exportedPath}` });
   const review = await restarted.dialog("editor");
   restarted.respond(review, { value: review.prefill });
   await pending;
@@ -290,7 +290,7 @@ test("real Pi RPC: snippets are reusable across workspaces, user snippets shadow
   const { rpc } = await data.start();
 
   // Built-in snippet through the picker, with project-specific context.
-  let pending = rpc.command("prompt", { message: "/goal-snippet" });
+  let pending = rpc.command("prompt", { message: "/goal @" });
   const list = await rpc.select("site-design");
   assert.ok(list.options.some((option) => option.startsWith("site-design [\u5185\u7f6e]")));
   const context = await rpc.dialog("editor");
@@ -307,7 +307,7 @@ test("real Pi RPC: snippets are reusable across workspaces, user snippets shadow
   assert.equal((await rpc.command("get_state")).isStreaming, false);
 
   // Save as a global user snippet (reviewed + edited), refusing duplicates.
-  pending = rpc.command("prompt", { message: "/goal-snippet-save 1 site-design" });
+  pending = rpc.command("prompt", { message: "/goal export 1 @site-design" });
   const review = await rpc.dialog("editor");
   rpc.respond(review, { value: review.prefill.replace(/\\n\\n\u9996\u9875 https:\/\/example.test/, "").replace("(max-iterations 3)", "(max-iterations 5)") });
   await pending;
@@ -315,7 +315,7 @@ test("real Pi RPC: snippets are reusable across workspaces, user snippets shadow
   const savedContent = await readFile(saved, "utf8");
   assert.ok(savedContent.includes("(max-iterations 5)"));
   assert.ok(!savedContent.includes("example.test"));
-  pending = rpc.command("prompt", { message: "/goal-snippet-save 1 site-design" });
+  pending = rpc.command("prompt", { message: "/goal export 1 @site-design" });
   const duplicate = await rpc.dialog("editor");
   rpc.respond(duplicate, { value: duplicate.prefill });
   await pending;
@@ -323,7 +323,7 @@ test("real Pi RPC: snippets are reusable across workspaces, user snippets shadow
   assert.match(failure.message, /EEXIST/);
   assert.equal(await readFile(saved, "utf8"), savedContent);
 
-  await rpc.command("prompt", { message: "/goal-snippet-save 1 Bad_Name" });
+  await rpc.command("prompt", { message: "/goal export 1 @Bad_Name" });
   const invalid = await rpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === "error");
   assert.match(invalid.message, /Snippet \u540d\u79f0/);
   await rpc.close();
@@ -334,7 +334,7 @@ test("real Pi RPC: snippets are reusable across workspaces, user snippets shadow
   const otherRpc = new PiRpc(other, data.agent);
   t.after(() => otherRpc.close());
   await otherRpc.command("get_state");
-  pending = otherRpc.command("prompt", { message: "/goal-snippet site-design \u843d\u5730\u9875" });
+  pending = otherRpc.command("prompt", { message: "/goal @site-design \u843d\u5730\u9875" });
   const otherConfirmation = await otherRpc.dialog("confirm");
   assert.match(otherConfirmation.message, /max-iterations 5/);
   otherRpc.respond(otherConfirmation, { confirmed: true });
@@ -345,15 +345,80 @@ test("real Pi RPC: snippets are reusable across workspaces, user snippets shadow
   assert.equal(goal.reviewLoop.maxIterations, 5);
   assert.match(goal.text, /\u843d\u5730\u9875$/);
 
-  await otherRpc.command("prompt", { message: "/goal-snippet missing-snippet" });
+  await otherRpc.command("prompt", { message: "/goal @missing-snippet" });
   const missing = await otherRpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === "error");
   assert.match(missing.message, /missing-snippet/);
 
   // Cancelled use creates nothing.
-  pending = otherRpc.command("prompt", { message: "/goal-snippet site-design" });
+  pending = otherRpc.command("prompt", { message: "/goal @site-design" });
   otherRpc.respond(await otherRpc.dialog("confirm"), { confirmed: false });
   await pending;
   assert.equal((await readdir(otherGoals)).filter((file) => file.endsWith(".json")).length, 1);
+});
+
+test("real Pi RPC: /goal is the single entry point; auxiliary commands are aliases", { timeout: 60000 }, async (t) => {
+  const data = await fixture(t);
+  const { rpc, state } = await data.start();
+  const path = await seed(data.workspace, state.sessionId);
+  await rpc.command("new_session");
+  const notice = (type) => rpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === type);
+
+  await rpc.command("prompt", { message: "/goal help" });
+  const help = await notice("info");
+  for (const usage of ["/goal @<snippet>", "/goal import", "/goal export <\u7f16\u53f7> @<\u540d\u79f0>"]) assert.ok(help.message.includes(usage), usage);
+  assert.ok(help.message.includes("/goal #<\u7f16\u53f7>"));
+
+  // /goal #<id> opens the goal's action menu directly; actions keep it open, leaving closes the panel.
+  let pending = rpc.command("prompt", { message: "/goal #1" });
+  const menu = await rpc.select("\u5c55\u5f00 TODO");
+  assert.match(menu.title, /^#1 /);
+  await rpc.select("\u8fd4\u56de\u76ee\u6807\u5217\u8868");
+  await rpc.select("\u53d6\u6d88\u76ee\u6807");
+  await rpc.select("\u53d6\u6d88\u76ee\u6807\uff0c\u4fdd\u7559\u5df2\u6709\u64cd\u4f5c");
+  const updated = await rpc.select("\u8fd4\u56de\u5217\u8868");
+  assert.match(updated.title, /\u5df2\u53d6\u6d88/);
+  await pending;
+  assert.equal(JSON.parse(await readFile(path, "utf8")).status, "cancelled");
+
+  await rpc.command("prompt", { message: "/goal #99" });
+  assert.match((await notice("warning")).message, /#99/);
+
+  // Bare numbers are ambiguous: rejected with a hint, never opened or created as a goal.
+  await rpc.command("prompt", { message: "/goal 1" });
+  assert.match((await notice("warning")).message, /\/goal #1/);
+  assert.deepEqual((await readdir(join(data.workspace, ".pi", "goals"))).filter((file) => file.endsWith(".json")), [path.split("/").pop()]);
+
+  // Text that only resembles a subcommand creates an ordinary goal (no model: saved as draft).
+  await rpc.command("prompt", { message: "/goal import the customer data" });
+  assert.match((await notice("warning")).message, /\u5f85\u6f84\u6e05/);
+  const goals = await Promise.all((await readdir(join(data.workspace, ".pi", "goals"))).map(async (file) => JSON.parse(await readFile(join(data.workspace, ".pi", "goals", file), "utf8"))));
+  const created = goals.find((goal) => goal.id === 2);
+  assert.equal(created.text, "import the customer data");
+  assert.equal(created.status, "clarifying");
+
+  // Invalid snippet names are rejected instead of becoming tasks.
+  await rpc.command("prompt", { message: "/goal @Bad_Name" });
+  assert.match((await notice("error")).message, /Snippet \u540d\u79f0/);
+
+  // Auxiliary aliases route to the same behavior.
+  const aliasPath = join(data.workspace, "alias.goal.sexp");
+  pending = rpc.command("prompt", { message: `/goal-export 1 ${aliasPath}` });
+  const review = await rpc.dialog("editor");
+  rpc.respond(review, { value: review.prefill });
+  await pending;
+  pending = rpc.command("prompt", { message: `/goal-import ${aliasPath}` });
+  rpc.respond(await rpc.dialog("confirm"), { confirmed: true });
+  await pending;
+  pending = rpc.command("prompt", { message: "/goal-snippet-save 1 alias-snippet" });
+  const snippetReview = await rpc.dialog("editor");
+  rpc.respond(snippetReview, { value: snippetReview.prefill });
+  await pending;
+  await readFile(join(data.agent, "pi-goal", "snippets", "alias-snippet.goal.sexp"), "utf8");
+  pending = rpc.command("prompt", { message: "/goal-snippet alias-snippet" });
+  rpc.respond(await rpc.dialog("confirm"), { confirmed: true });
+  await pending;
+  assert.equal((await readdir(join(data.workspace, ".pi", "goals"))).filter((file) => file.endsWith(".json")).length, 4);
+  assert.equal((await rpc.command("get_state")).isStreaming, false);
 });
 
 test("real Pi RPC: invalid or cancelled template imports do not create goals", { timeout: 60000 }, async (t) => {
@@ -374,12 +439,12 @@ test("real Pi RPC: invalid or cancelled template imports do not create goals", {
     "x".repeat(65537),
   ]) {
     await writeFile(path, content);
-    await rpc.command("prompt", { message: `/goal-import ${path}` });
+    await rpc.command("prompt", { message: `/goal import ${path}` });
     const error = await rpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === "error");
     assert.match(error.message, /模板操作失败/);
   }
   await writeFile(path, '(goal (version 1) (title "cancelled") (todos (todo "do nothing")))');
-  const pending = rpc.command("prompt", { message: `/goal-import ${path}` });
+  const pending = rpc.command("prompt", { message: `/goal import ${path}` });
   const confirmation = await rpc.dialog("confirm");
   rpc.respond(confirmation, { confirmed: false });
   await pending;

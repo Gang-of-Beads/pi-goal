@@ -5,8 +5,8 @@ Snippet 是可在所有项目中复用的 goal 定义，格式与 [`.goal.sexp` 
 ## 使用
 
 ```text
-/goal-snippet
-/goal-snippet site-design 首页 https://example.com，保留现有品牌色
+/goal @
+/goal @site-design 首页 https://example.com，保留现有品牌色
 ```
 
 - 不带参数时列出所有 snippet，选择后可补充本项目信息（页面、URL、范围等，可留空）。
@@ -15,15 +15,15 @@ Snippet 是可在所有项目中复用的 goal 定义，格式与 [`.goal.sexp` 
 - 确认后在**当前 workspace** 创建新 goal（新 UUIDv7），不会修改 snippet 本身。
 - 没有 TODO 的 snippet 会立即进入交互式澄清（需已选择模型且 AI 空闲，否则保存为待澄清）；包含 TODO 的 snippet 视为已确认计划，**不自动执行**。
 
-`/goal` 面板的分区首页也提供“从 Snippet 创建”。
+`/goal` 面板的分区首页也提供“从 Snippet 创建”；输入 `/goal @` 时可自动补全 snippet 名称。别名 `/goal-snippet [名称] [补充信息]` 行为相同。
 
 ## 保存
 
 ```text
-/goal-snippet-save 1 landing-review
+/goal export 1 @landing-review
 ```
 
-或在面板中选中目标，选择“保存为 Snippet”。保存前会打开编辑器审阅内容，请移除项目专属信息（URL、路径、业务细节）和敏感内容；取消则不保存。只保存目标定义，不含执行状态、问答或历史。
+或在面板中选中目标，选择“保存为 Snippet”（别名：`/goal-snippet-save <编号> <名称>`）。保存前会打开编辑器审阅内容，请移除项目专属信息（URL、路径、业务细节）和敏感内容；取消则不保存。只保存目标定义，不含执行状态、问答或历史。
 
 名称只能包含小写字母、数字和连字符，以字母或数字开头，最多 64 个字符。已存在的同名用户 snippet 不会被覆盖；如需更新，请先手动删除旧文件。
 

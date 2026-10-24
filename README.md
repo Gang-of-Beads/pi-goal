@@ -13,12 +13,15 @@ pi install /absolute/path/to/pi-goal
 ```text
 /goal 添加健康检查接口并验证
 /goal
-/goal-snippet site-design 首页 https://example.com
+/goal @site-design 首页 https://example.com
 ```
 
 - `/goal <任务>`：交互式澄清并确认 TODO，确认后不自动执行。
 - `/goal`：打开 Session / Workspace / 所有 Goal 面板，管理目标与 TODO。
-- `/goal-snippet`：用全局可复用的 goal snippet 创建目标，如内置的 `site-design`。
+- `/goal @<snippet>`：用跨项目复用的 snippet 创建目标，如内置的 `site-design`。
+- `/goal help`：查看全部用法（`#<编号>` 直接打开目标、导入 / 导出、保存 snippet 等）。
+
+所有功能都通过 `/goal` 完成；`/goal-import`、`/goal-export`、`/goal-snippet`、`/goal-snippet-save` 只是辅助别名。
 
 支持执行、暂停、修改、取消及回滚请求。目标以 UUIDv7 JSON 文件持久化；回滚不保证所有操作可撤销，高风险操作仍需审批。
 

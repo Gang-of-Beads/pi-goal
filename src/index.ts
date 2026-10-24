@@ -198,12 +198,21 @@ export default function goalExtension(pi: ExtensionAPI) {
     return goal;
   }
 
+  /** A turn can only start when a model with configured credentials is selected. */
+  function modelReady(ctx: ExtensionContext): boolean {
+    return !!ctx.model && ctx.modelRegistry.hasConfiguredAuth(ctx.model);
+  }
+
   function start(goal: Goal, ctx: ExtensionContext): boolean {
     if (!ctx.isIdle() || activeId !== undefined) {
       ctx.ui.notify("AI 正在执行，请等待或先暂停当前目标。", "warning");
       return false;
     }
     if (!goal.planConfirmed || !goal.todos?.length) return clarify(goal, ctx);
+    if (!modelReady(ctx)) {
+      ctx.ui.notify("未选择可用模型（或缺少凭据），无法执行目标。", "warning");
+      return false;
+    }
     const previousStatus = goal.status;
     planningId = undefined;
     goal.status = "running";
@@ -224,6 +233,10 @@ export default function goalExtension(pi: ExtensionAPI) {
   }
 
   function clarify(goal: Goal, ctx: ExtensionContext): boolean {
+    if (!modelReady(ctx)) {
+      ctx.ui.notify(`未选择可用模型（或缺少凭据）；目标 #${goal.id} 已保存为待澄清，配置后可在面板继续。`, "warning");
+      return false;
+    }
     if (!ctx.isIdle() || activeId !== undefined) {
       ctx.ui.notify("AI 正在执行；目标已保存，可稍后在面板继续澄清。", "warning");
       return false;
@@ -513,10 +526,6 @@ export default function goalExtension(pi: ExtensionAPI) {
       ctx.ui.notify(`已从 Snippet 创建目标 #${goal.id}，计划已确认，未自动执行。`, "info");
       return false;
     }
-    if (!ctx.model) {
-      ctx.ui.notify(`已从 Snippet 创建目标 #${goal.id}；未选择模型，保存为待澄清。`, "warning");
-      return false;
-    }
     if (clarify(goal, ctx)) return true;
     ctx.ui.notify(`已从 Snippet 创建目标 #${goal.id}，保存为待澄清。`, "info");
     return false;
@@ -525,7 +534,7 @@ export default function goalExtension(pi: ExtensionAPI) {
   async function pickSnippet(ctx: ExtensionCommandContext): Promise<boolean> {
     const currentGeneration = generation;
     const snippets = loadSnippets(ctx);
-    if (!snippets.length) { ctx.ui.notify("暂无 Snippet。可用 /goal-snippet-save <目标编号> <名称> 保存。", "info"); return false; }
+    if (!snippets.length) { ctx.ui.notify("暂无 Snippet。可用 /goal export <编号> @<名称> 保存。", "info"); return false; }
     const labels = snippets.map(snippetLabel);
     const selected = await ctx.ui.select("Goal Snippets", [...labels, "返回"]);
     const snippet = snippets[labels.indexOf(selected ?? "")];
@@ -564,9 +573,88 @@ export default function goalExtension(pi: ExtensionAPI) {
     try { await action(); } catch (error) { ctx.ui.notify(`Goal 模板操作失败：${String(error)}`, "error"); }
   }
 
-  async function panel(ctx: ExtensionCommandContext) {
+  function goalDetails(goal: Goal): string {
+    return [
+      goalLabel(goal), `Workspace: ${goal.workspace}`, `Session: ${goal.sessionId ?? "未知"}`, `UUID: ${goal.uuid}`,
+      ...(goal.todos ?? []).map((todo) => `${todoLabel(todo)}${todo.evidence ? ` · ${todo.evidence}` : ""}`),
+      "", serializeGoalTemplate(templateFromGoal(goal)),
+    ].join("\n");
+  }
+
+  /** One action on a goal in the current workspace. "exit" closes the panel (a run started). */
+  async function goalMenu(goal: Goal, ctx: ExtensionCommandContext, isCurrent: () => boolean): Promise<"exit" | "back" | "done"> {
+    const actions = [
+      "查看目标定义", "展开 TODO",
+      ...(goal.status === "running" || activeId === goal.id ? ["暂停"] : [goal.planConfirmed ? "执行 / 继续" : "继续澄清"]),
+      "修改",
+      ...(goal.status === "running" || goal.status === "done" || goal.status === "paused" ? [] : ["暂停"]),
+      ...(goal.status === "running" ? [] : [goal.status === "done" ? "重新打开" : "标记完成"]),
+      "导出 Goal 模板", "保存为 Snippet", "取消目标", "删除", "返回列表",
+    ];
+    const action = await ctx.ui.select(goalLabel(goal), actions);
+    if (!isCurrent()) return "exit";
+    if (!action || action === "返回列表") return "back";
+    // A run may have settled while a dialog was open; operations check live state.
+    if (action === "查看目标定义") {
+      await ctx.ui.select(serializeGoalTemplate(templateFromGoal(goal)), ["返回列表"]);
+    } else if (action === "展开 TODO") {
+      await todoPanel(goal, ctx, isCurrent);
+    } else if (action === "执行 / 继续" || action === "继续澄清") {
+      if (start(goal, ctx)) return "exit";
+    } else if (action === "导出 Goal 模板") {
+      const path = await ctx.ui.editor("导出文件路径（.goal.sexp，不覆盖已有文件）", `${goal.uuid}.goal.sexp`);
+      if (!isCurrent()) return "exit";
+      if (path?.trim()) await sharing(() => exportTemplate(goal, path.trim(), ctx), ctx);
+    } else if (action === "保存为 Snippet") {
+      const name = await ctx.ui.input("Snippet 名称（小写字母、数字、连字符）", "site-design");
+      if (!isCurrent()) return "exit";
+      if (name?.trim()) await sharing(() => saveAsSnippet(goal, name.trim(), ctx), ctx);
+    } else if (action === "取消目标") {
+      if (await cancel(goal, ctx, isCurrent)) return "exit";
+    } else if (action === "暂停") {
+      if (goal.status !== "done") pause(goal, ctx);
+    } else if (action === "修改") {
+      if (activeId !== undefined) {
+        ctx.ui.notify("请先暂停目标，等待 AI 停止后再修改。", "warning");
+        return "done";
+      }
+      const text = await ctx.ui.editor(`修改目标 #${goal.id}`, goal.text);
+      if (!isCurrent()) return "exit";
+      if (text?.trim()) {
+        goal.text = text.trim();
+        goal.planConfirmed = false;
+        goal.status = "clarifying";
+        save(ctx);
+      }
+    } else if (action === "删除") {
+      if (await ctx.ui.confirm(`删除目标 #${goal.id}？`, "只删除目标记录，不撤销文件或资源改动；正在执行的目标会被暂停。")) {
+        if (!isCurrent()) return "exit";
+        if (activeId === goal.id) pause(goal, ctx);
+        storage!.remove(goal);
+        if (goal.uuid) persisted.delete(goal.uuid);
+        state.goals = state.goals.filter((item) => item.id !== goal.id);
+        save(ctx);
+        return "back";
+      }
+    } else if (action === "标记完成" || action === "重新打开") {
+      if (goal.status === "running" || activeId === goal.id) {
+        ctx.ui.notify("请先暂停目标，等待 AI 停止。", "warning");
+        return "done";
+      }
+      if (action === "标记完成" && (!goal.planConfirmed || !goal.todos?.length || goal.todos.some((todo) => todo.status !== "done"))) {
+        ctx.ui.notify("请先确认计划并完成所有 TODO，再标记目标完成。", "warning");
+        return "done";
+      }
+      goal.status = action === "标记完成" ? "done" : goal.planConfirmed ? "pending" : "clarifying";
+      save(ctx);
+    }
+    return "done";
+  }
+
+  /** The /goal panel. With initial, it opens that goal's action menu directly and closes when the user leaves it. */
+  async function panel(ctx: ExtensionCommandContext, initial?: Goal) {
     if (!ctx.hasUI) {
-      ctx.ui.notify(sections(ctx).map((section) => `${section.title} (${section.goals.length})\n${section.goals.map((goal) => [goalLabel(goal), ...(goal.todos ?? []).map((todo) => `  ${todoLabel(todo)}`)].join("\n")).join("\n") || "暂无目标"}`).join("\n\n"), "info");
+      ctx.ui.notify(initial ? goalDetails(initial) : sections(ctx).map((section) => `${section.title} (${section.goals.length})\n${section.goals.map((goal) => [goalLabel(goal), ...(goal.todos ?? []).map((todo) => `  ${todoLabel(todo)}`)].join("\n")).join("\n") || "暂无目标"}`).join("\n\n"), "info");
       return;
     }
     if (panelOpen) return;
@@ -575,6 +663,12 @@ export default function goalExtension(pi: ExtensionAPI) {
     const isCurrent = () => generation === currentGeneration;
     let scope: number | undefined;
     try {
+      if (initial) {
+        while (isCurrent() && state.goals.includes(initial)) {
+          if (await goalMenu(initial, ctx, isCurrent) !== "done") return;
+        }
+        return;
+      }
       while (isCurrent()) {
         const groups = sections(ctx);
         if (scope === undefined) {
@@ -619,136 +713,138 @@ export default function goalExtension(pi: ExtensionAPI) {
         const goal = group.goals[choices.indexOf(selected)];
         if (!goal) continue;
         if (goal.workspace !== resolve(ctx.cwd)) {
-          const details = [goalLabel(goal), `Workspace: ${goal.workspace}`, `Session: ${goal.sessionId ?? "未知"}`, `UUID: ${goal.uuid}`, ...(goal.todos ?? []).map((todo) => `${todoLabel(todo)}${todo.evidence ? ` · ${todo.evidence}` : ""}`)].join("\n");
-          await ctx.ui.select(details, ["返回列表"]);
+          await ctx.ui.select(goalDetails(goal), ["返回列表"]);
           if (isCurrent()) ctx.ui.notify(`此目标属于 ${goal.workspace}，请在对应 workspace 中执行或修改。`, "info");
           continue;
         }
-        const actions = [
-          "查看目标定义", "展开 TODO",
-          ...(goal.status === "running" || activeId === goal.id ? ["暂停"] : [goal.planConfirmed ? "执行 / 继续" : "继续澄清"]),
-          "修改",
-          ...(goal.status === "running" || goal.status === "done" || goal.status === "paused" ? [] : ["暂停"]),
-          ...(goal.status === "running" ? [] : [goal.status === "done" ? "重新打开" : "标记完成"]),
-          "导出 Goal 模板", "保存为 Snippet", "取消目标", "删除", "返回列表",
-        ];
-        const action = await ctx.ui.select(goalLabel(goal), actions);
-        if (!isCurrent()) return;
-        // A run may have settled while a dialog was open; operations check live state.
-        if (action === "查看目标定义") {
-          await ctx.ui.select(serializeGoalTemplate(templateFromGoal(goal)), ["返回列表"]);
-        } else if (action === "展开 TODO") {
-          await todoPanel(goal, ctx, isCurrent);
-        } else if (action === "执行 / 继续" || action === "继续澄清") {
-          if (start(goal, ctx)) return;
-        } else if (action === "导出 Goal 模板") {
-          const path = await ctx.ui.editor("导出文件路径（.goal.sexp，不覆盖已有文件）", `${goal.uuid}.goal.sexp`);
-          if (!isCurrent()) return;
-          if (path?.trim()) await sharing(() => exportTemplate(goal, path.trim(), ctx), ctx);
-        } else if (action === "保存为 Snippet") {
-          const name = await ctx.ui.input("Snippet 名称（小写字母、数字、连字符）", "site-design");
-          if (!isCurrent()) return;
-          if (name?.trim()) await sharing(() => saveAsSnippet(goal, name.trim(), ctx), ctx);
-        } else if (action === "取消目标") {
-          if (await cancel(goal, ctx, isCurrent)) return;
-        } else if (action === "暂停") {
-          if (goal.status !== "done") pause(goal, ctx);
-        } else if (action === "修改") {
-          if (activeId !== undefined) {
-            ctx.ui.notify("请先暂停目标，等待 AI 停止后再修改。", "warning");
-            continue;
-          }
-          const text = await ctx.ui.editor(`修改目标 #${goal.id}`, goal.text);
-          if (!isCurrent()) return;
-          if (text?.trim()) {
-            goal.text = text.trim();
-            goal.planConfirmed = false;
-            goal.status = "clarifying";
-            save(ctx);
-          }
-        } else if (action === "删除") {
-          if (await ctx.ui.confirm(`删除目标 #${goal.id}？`, "只删除目标记录，不撤销文件或资源改动；正在执行的目标会被暂停。")) {
-            if (!isCurrent()) return;
-            if (activeId === goal.id) pause(goal, ctx);
-            storage!.remove(goal);
-            if (goal.uuid) persisted.delete(goal.uuid);
-            state.goals = state.goals.filter((item) => item.id !== goal.id);
-            save(ctx);
-          }
-        } else if (action === "标记完成" || action === "重新打开") {
-          if (goal.status === "running" || activeId === goal.id) {
-            ctx.ui.notify("请先暂停目标，等待 AI 停止。", "warning");
-            continue;
-          }
-          if (action === "标记完成" && (!goal.planConfirmed || !goal.todos?.length || goal.todos.some((todo) => todo.status !== "done"))) {
-            ctx.ui.notify("请先确认计划并完成所有 TODO，再标记目标完成。", "warning");
-            continue;
-          }
-          goal.status = action === "标记完成" ? "done" : goal.planConfirmed ? "pending" : "clarifying";
-          save(ctx);
-        }
+        if (await goalMenu(goal, ctx, isCurrent) === "exit") return;
       }
     } finally {
       panelOpen = false;
     }
   }
 
-  pi.registerCommand("goal-snippet", {
-    description: "使用 Goal Snippet：/goal-snippet [名称] [本项目补充信息]",
-    handler: async (args, ctx) => {
-      if (storageError) { ctx.ui.notify(storageError, "error"); return; }
-      const match = /^(\S+)(?:\s+([\s\S]+))?$/.exec(args.trim());
-      await sharing(async () => {
-        if (!match) {
-          if (ctx.hasUI) { await pickSnippet(ctx); return; }
-          const snippets = loadSnippets(ctx);
-          ctx.ui.notify(snippets.length ? snippets.map(snippetLabel).join("\n") : "暂无 Snippet。", "info");
-          return;
-        }
-        const snippet = loadSnippets(ctx).find((item) => item.name === match[1]);
-        if (!snippet) throw new Error(`未找到 Snippet：${match[1]}`);
-        await useSnippet(snippet, match[2] ?? "", ctx);
-      }, ctx);
+  const USAGE = [
+    "/goal                          打开目标面板（Session / Workspace / 所有 Goal）",
+    "/goal <任务>                   新增目标并交互式澄清 TODO",
+    "/goal #<编号>                  直接打开当前 workspace 的某个目标",
+    "/goal @                        选择 Snippet 创建目标",
+    "/goal @<snippet> [补充信息]    用 Snippet 创建目标",
+    "/goal import <文件.goal.sexp>  导入模板",
+    "/goal export <编号> [文件.goal.sexp]  导出模板",
+    "/goal export <编号> @<名称>    保存为全局 Snippet",
+    "/goal help                     显示本帮助",
+  ].join("\n");
+
+  function findGoal(id: string, ctx: ExtensionContext): Goal | undefined {
+    const goal = state.goals.find((item) => item.id === Number(id));
+    if (!goal) ctx.ui.notify(`当前 workspace 没有目标 #${id}。用 /goal 查看列表。`, "warning");
+    return goal;
+  }
+
+  async function snippetCommand(name: string, context: string, ctx: ExtensionCommandContext) {
+    await sharing(async () => {
+      if (!name) {
+        if (ctx.hasUI) { await pickSnippet(ctx); return; }
+        const snippets = loadSnippets(ctx);
+        ctx.ui.notify(snippets.length ? snippets.map(snippetLabel).join("\n") : "暂无 Snippet。", "info");
+        return;
+      }
+      validateSnippetName(name);
+      const snippet = loadSnippets(ctx).find((item) => item.name === name);
+      if (!snippet) throw new Error(`未找到 Snippet：${name}`);
+      await useSnippet(snippet, context, ctx);
+    }, ctx);
+  }
+
+  async function exportCommand(goal: Goal, target: string | undefined, ctx: ExtensionCommandContext) {
+    if (target?.startsWith("@")) await sharing(() => saveAsSnippet(goal, target.slice(1), ctx), ctx);
+    else await sharing(() => exportTemplate(goal, target ?? `${goal.uuid}.goal.sexp`, ctx), ctx);
+  }
+
+  /**
+   * /goal is the single entry point. Subcommands only match strict shapes (numeric IDs, @snippet,
+   * import/export with .goal.sexp paths), so ordinary task text still creates a goal.
+   */
+  async function goalCommand(args: string, ctx: ExtensionCommandContext) {
+    if (storageError) { ctx.ui.notify(storageError, "error"); return; }
+    const text = args.trim();
+    if (!text) return panel(ctx);
+    if (text === "help") { ctx.ui.notify(USAGE, "info"); return; }
+    let match: RegExpExecArray | null;
+    if ((match = /^#(\d+)$/.exec(text))) {
+      const goal = findGoal(match[1]!, ctx);
+      if (goal) await panel(ctx, goal);
+      return;
+    }
+    if (/^\d+$/.test(text)) {
+      // A bare number is ambiguous (task text vs. goal ID); require the explicit #<id> form.
+      ctx.ui.notify(`打开目标请用 /goal #${text}；如需新建目标，请写明任务内容。`, "warning");
+      return;
+    }
+    if ((match = /^@(\S*)(?:\s+([\s\S]+))?$/.exec(text))) return snippetCommand(match[1]!, match[2] ?? "", ctx);
+    if ((match = /^import\s+(\S[\s\S]*\.goal\.sexp)$/.exec(text))) return sharing(() => importTemplate(match![1]!, ctx), ctx);
+    if ((match = /^export\s+#?(\d+)(?:\s+(@\S+|\S[\s\S]*\.goal\.sexp))?$/.exec(text))) {
+      const goal = findGoal(match[1]!, ctx);
+      if (goal) await exportCommand(goal, match[2], ctx);
+      return;
+    }
+    const goal = add(text, ctx);
+    if (!clarify(goal, ctx)) ctx.ui.notify(`目标 #${goal.id} 已保存为待澄清，可在 /goal 面板继续。`, "info");
+  }
+
+  pi.registerCommand("goal", {
+    description: "目标统一入口：/goal [任务 | 编号 | @snippet | import | export | help]",
+    getArgumentCompletions: (prefix) => {
+      const trimmed = prefix.trimStart();
+      if (trimmed.startsWith("@")) {
+        try {
+          return listSnippets(getAgentDir()).snippets.filter((snippet) => `@${snippet.name}`.startsWith(trimmed))
+            .map((snippet) => ({ value: `@${snippet.name} `, label: `@${snippet.name}`, description: snippet.template.title.split("\n")[0] }));
+        } catch { return null; }
+      }
+      const items = [
+        { value: "@", label: "@<snippet>", description: "用 Snippet 创建目标" },
+        { value: "import ", label: "import <文件.goal.sexp>", description: "导入模板" },
+        { value: "export ", label: "export <编号> [文件 | @名称]", description: "导出模板或保存为 Snippet" },
+        { value: "help", label: "help", description: "显示用法" },
+        ...state.goals.map((goal) => ({ value: `#${goal.id}`, label: `#${goal.id}`, description: goal.text.split("\n")[0] })),
+      ];
+      const matches = items.filter((item) => item.value.startsWith(trimmed));
+      return matches.length ? matches : null;
     },
-  });
-  pi.registerCommand("goal-snippet-save", {
-    description: "把目标保存为全局 Snippet：/goal-snippet-save <当前 workspace 的目标编号> <名称>",
-    handler: async (args, ctx) => {
-      if (storageError) { ctx.ui.notify(storageError, "error"); return; }
-      const match = /^(\d+)\s+(\S+)$/.exec(args.trim());
-      const goal = match ? state.goals.find((item) => item.id === Number(match[1])) : undefined;
-      if (!goal) { ctx.ui.notify("用法：/goal-snippet-save <当前 workspace 的目标编号> <名称>；目标必须存在。", "warning"); return; }
-      await sharing(() => saveAsSnippet(goal, match![2]!, ctx), ctx);
-    },
+    handler: goalCommand,
   });
 
+  // Auxiliary aliases for discoverability; all behavior is reachable through /goal.
+  pi.registerCommand("goal-snippet", {
+    description: "等同 /goal @<snippet> [补充信息]",
+    handler: (args, ctx) => goalCommand(`@${args.trim()}`, ctx),
+  });
+  pi.registerCommand("goal-snippet-save", {
+    description: "等同 /goal export <编号> @<名称>",
+    handler: async (args, ctx) => {
+      const match = /^#?(\d+)\s+@?(\S+)$/.exec(args.trim());
+      if (!match) { ctx.ui.notify("用法：/goal export <编号> @<名称>", "warning"); return; }
+      await goalCommand(`export ${match[1]} @${match[2]}`, ctx);
+    },
+  });
   pi.registerCommand("goal-import", {
-    description: "导入 .goal.sexp 模板：/goal-import <文件路径>",
+    description: "等同 /goal import <文件.goal.sexp>",
     handler: async (args, ctx) => {
       if (storageError) { ctx.ui.notify(storageError, "error"); return; }
-      if (!args.trim()) { ctx.ui.notify("用法：/goal-import <文件路径>", "warning"); return; }
+      if (!args.trim()) { ctx.ui.notify("用法：/goal import <文件.goal.sexp>", "warning"); return; }
       await sharing(() => importTemplate(args.trim(), ctx), ctx);
     },
   });
   pi.registerCommand("goal-export", {
-    description: "导出目标定义：/goal-export <当前 workspace 的目标编号> [文件路径]",
+    description: "等同 /goal export <编号> [文件.goal.sexp | @名称]",
     handler: async (args, ctx) => {
       if (storageError) { ctx.ui.notify(storageError, "error"); return; }
-      const match = /^(\d+)(?:\s+([\s\S]+))?$/.exec(args.trim());
-      const goal = match ? state.goals.find((item) => item.id === Number(match[1])) : undefined;
-      if (!goal) { ctx.ui.notify("用法：/goal-export <当前 workspace 的目标编号> [文件路径]；目标必须存在。", "warning"); return; }
-      await sharing(() => exportTemplate(goal, match![2] ?? `${goal.uuid}.goal.sexp`, ctx), ctx);
-    },
-  });
-
-  pi.registerCommand("goal", {
-    description: "管理目标及 TODO，或 /goal <任务> 新增并交互式澄清目标",
-    handler: async (args, ctx) => {
-      if (storageError) { ctx.ui.notify(storageError, "error"); return; }
-      const text = args.trim();
-      if (!text) return panel(ctx);
-      const goal = add(text, ctx);
-      if (!clarify(goal, ctx)) ctx.ui.notify(`目标 #${goal.id} 已保存为待澄清，可在 /goal 面板继续。`, "info");
+      const match = /^#?(\d+)(?:\s+([\s\S]+))?$/.exec(args.trim());
+      const goal = match ? findGoal(match[1]!, ctx) : undefined;
+      if (!match) ctx.ui.notify("用法：/goal export <编号> [文件.goal.sexp | @名称]", "warning");
+      if (goal) await exportCommand(goal, match![2]?.trim(), ctx);
     },
   });
 }

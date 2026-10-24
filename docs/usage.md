@@ -23,9 +23,26 @@
 
 输入区上方显示最多 5 个目标的摘要，完整列表在 `/goal` 面板中查看。
 
-使用 `/goal-snippet [名称] [补充信息]` 从跨项目复用的 snippet 创建目标，详见 [Snippets](snippets.md)。
+## 命令
 
-使用 `/goal-import <路径>` 或 `/goal-export <编号> [路径]` 分享可复用的目标定义，详见[目标分享](sharing.md)。面板也提供导入和导出入口。
+所有功能都通过 `/goal` 完成：
+
+| 用法 | 作用 |
+|---|---|
+| `/goal` | 打开目标面板 |
+| `/goal <任务>` | 新增目标并交互式澄清 TODO |
+| `/goal #<编号>` | 直接打开当前 workspace 中该目标的操作菜单 |
+| `/goal @` / `/goal @<snippet> [补充信息]` | 用 [Snippet](snippets.md) 创建目标 |
+| `/goal import <文件.goal.sexp>` | 导入模板，见[目标分享](sharing.md) |
+| `/goal export <编号> [文件.goal.sexp]` | 导出模板 |
+| `/goal export <编号> @<名称>` | 保存为全局 Snippet |
+| `/goal help` | 显示用法 |
+
+打开目标必须写 `#`：`/goal #1`。纯数字 `/goal 1` 有歧义，会提示改用 `#1`，不会打开或新建目标。只有严格匹配上述形式时才视为子命令：`export` 的编号必须是纯数字，`import` / `export` 的文件必须以 `.goal.sexp` 结尾，`@` 后必须是合法的 snippet 名称。其他文字（例如 `/goal import the customer data`）都作为新目标。输入 `/goal ` 后支持自动补全子命令、`#<编号>` 和 snippet 名称。
+
+`/goal-import`、`/goal-export`、`/goal-snippet`、`/goal-snippet-save` 是辅助别名，功能与上表对应用法一致。
+
+未选择模型或模型缺少凭据时，新目标保存为待澄清，不会启动 AI 轮次；配置后可在面板“继续澄清”。
 
 ### 执行边界
 
