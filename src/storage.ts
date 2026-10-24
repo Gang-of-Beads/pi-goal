@@ -14,18 +14,27 @@ export function registerWorkspace(root: string, cwd: string) {
   renameSync(temporary, path);
 }
 
-export function knownWorkspaces(root: string): string[] {
+/** Invalid registry files are reported and skipped so one bad entry cannot hide every workspace. */
+export function knownWorkspaces(root: string): { workspaces: string[]; errors: string[] } {
   const directory = join(root, "pi-goal", "workspaces");
   let names: string[];
   try { names = readdirSync(directory); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { workspaces: [], errors: [] };
     throw error;
   }
-  return names.filter((name) => name.endsWith(".json")).map((name) => {
-    const data = JSON.parse(readFileSync(join(directory, name), "utf8")) as { workspace?: unknown };
-    if (typeof data.workspace !== "string") throw new Error(`Invalid workspace registry: ${name}`);
-    return resolve(data.workspace);
-  });
+  const workspaces: string[] = [];
+  const errors: string[] = [];
+  for (const name of names.filter((name) => name.endsWith(".json"))) {
+    const path = join(directory, name);
+    try {
+      const data = JSON.parse(readFileSync(path, "utf8")) as { workspace?: unknown } | null;
+      if (typeof data?.workspace !== "string") throw new Error("missing workspace path");
+      workspaces.push(resolve(data.workspace));
+    } catch (error) {
+      errors.push(`${path}: ${String(error)}`);
+    }
+  }
+  return { workspaces, errors };
 }
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -44,21 +53,32 @@ export class GoalStorage {
     return join(this.directory, `${uuid}.json`);
   }
 
-  load(): Goal[] {
+  /**
+   * Unreadable or malformed files are reported and skipped, never rewritten or deleted.
+   * Directory-level failures still throw because nothing can be loaded safely.
+   */
+  load(): { goals: Goal[]; errors: string[] } {
     this.originals.clear();
     let names: string[];
     try { names = readdirSync(this.directory); } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { goals: [], errors: [] };
       throw error;
     }
-    return names.filter((name) => name.endsWith(".json")).sort().map((name) => {
+    const goals: Goal[] = [];
+    const errors: string[] = [];
+    for (const name of names.filter((name) => name.endsWith(".json")).sort()) {
       const uuid = name.slice(0, -5);
-      const content = readFileSync(this.path(uuid), "utf8");
-      const goal = JSON.parse(content) as Goal;
-      if (goal.uuid !== uuid) throw new Error(`Goal UUID does not match filename: ${name}`);
-      this.originals.set(uuid, content);
-      return goal;
-    });
+      try {
+        const content = readFileSync(this.path(uuid), "utf8");
+        const goal = JSON.parse(content) as Goal;
+        if (!goal || typeof goal !== "object" || goal.uuid !== uuid) throw new Error("goal UUID does not match filename");
+        this.originals.set(uuid, content);
+        goals.push(goal);
+      } catch (error) {
+        errors.push(`${join(this.directory, name)}: ${String(error)}`);
+      }
+    }
+    return { goals, errors };
   }
 
   /** Highest display ID currently on disk, including goals created by other sessions after load. */
