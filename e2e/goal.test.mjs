@@ -80,7 +80,8 @@ class PiRpc {
   respond(request, data) { this.send({ type: "extension_ui_response", id: request.id, ...data }); }
   async select(text) {
     const request = await this.dialog("select");
-    const value = request.options.find((option) => option === text || option.startsWith(text));
+    // List labels start with a status symbol, e.g. "○ #1 …"; match the label after it as well.
+    const value = request.options.find((option) => option === text || option.startsWith(text) || option.replace(/^\S+ /, "").startsWith(text));
     assert.ok(value, `Missing ${text} in ${JSON.stringify(request.options)}`);
     this.respond(request, { value });
     return request;
@@ -132,7 +133,8 @@ async function seed(workspace, sessionId, uuid = "01900000-0000-7000-8000-000000
 
 async function openGoal(rpc, scope = "当前 Workspace") {
   const pending = rpc.command("prompt", { message: "/goal" });
-  await rpc.select(scope);
+  // RPC fallback opens on the current session; other scopes are list items.
+  if (scope !== "当前 Session") await rpc.select(`切换到：${scope}`);
   await rpc.select("#1 ");
   return { pending };
 }
@@ -150,7 +152,9 @@ test("real Pi RPC: TODO completion, timestamp, cancellation, restart and deletio
   const editor = await rpc.dialog("editor");
   rpc.respond(editor, { value: "实际 RPC 人工验证通过" });
   const todoList = await rpc.select("返回目标列表");
-  assert.ok(todoList.options.some((option) => option.includes("已完成") && option.includes("完成于")));
+  assert.ok(todoList.options.some((option) => option.startsWith("✓ TODO #1 ") && option.includes("完成于") && option.includes("说明：实际 RPC 人工验证通过")));
+  // Dialog-only clients must not receive terminal escape codes.
+  assert.ok(!JSON.stringify(rpc.records).includes("\\u001b"));
   await rpc.select("关闭");
   await pending;
   const completed = JSON.parse(await readFile(path, "utf8"));
@@ -171,7 +175,7 @@ test("real Pi RPC: TODO completion, timestamp, cancellation, restart and deletio
   const restarted = (await fixtureData.start()).rpc;
   ({ pending } = await openGoal(restarted));
   const actions = await restarted.select("删除");
-  assert.match(actions.title, /已取消/);
+  assert.match(actions.title, /^✗ #1 /);
   const confirm = await restarted.dialog("confirm");
   restarted.respond(confirm, { confirmed: true });
   await restarted.select("关闭");
@@ -371,12 +375,12 @@ test("real Pi RPC: /goal is the single entry point; auxiliary commands are alias
   // /goal #<id> opens the goal's action menu directly; actions keep it open, leaving closes the panel.
   let pending = rpc.command("prompt", { message: "/goal #1" });
   const menu = await rpc.select("\u5c55\u5f00 TODO");
-  assert.match(menu.title, /^#1 /);
+  assert.match(menu.title, /^○ #1 /);
   await rpc.select("\u8fd4\u56de\u76ee\u6807\u5217\u8868");
   await rpc.select("\u53d6\u6d88\u76ee\u6807");
   await rpc.select("\u53d6\u6d88\u76ee\u6807\uff0c\u4fdd\u7559\u5df2\u6709\u64cd\u4f5c");
   const updated = await rpc.select("\u8fd4\u56de\u5217\u8868");
-  assert.match(updated.title, /\u5df2\u53d6\u6d88/);
+  assert.match(updated.title, /^✗ #1 /);
   await pending;
   assert.equal(JSON.parse(await readFile(path, "utf8")).status, "cancelled");
 
@@ -463,12 +467,11 @@ test("real Pi RPC: Session / Workspace / all scopes include foreign workspace re
   await writeFile(join(registry, "foreign.json"), JSON.stringify({ workspace: foreignWorkspace }));
   await rpc.command("new_session");
   const pending = rpc.command("prompt", { message: "/goal" });
-  const scopes = await rpc.select("当前 Session");
-  assert.deepEqual(scopes.options.slice(0, 3), ["当前 Session (0)", "当前 Workspace (1)", "所有 Goal (2)"]);
-  const emptySession = await rpc.select("返回分区");
-  assert.ok(!emptySession.options.some((option) => option.startsWith("#1")));
-  await rpc.select("所有 Goal");
+  const session = await rpc.select("切换到：所有 Goal");
+  assert.match(session.title, /当前 Session · 0 个目标/);
+  assert.deepEqual(session.options, ["＋ 新增目标", "切换到：当前 Workspace (1)", "切换到：所有 Goal (2)", "关闭"]);
   const list = await rpc.dialog("select");
+  assert.ok(list.options.includes("切换到：当前 Session (0)"));
   const foreign = list.options.find((option) => option.includes(foreignWorkspace));
   assert.ok(foreign);
   rpc.respond(list, { value: foreign });
@@ -476,6 +479,51 @@ test("real Pi RPC: Session / Workspace / all scopes include foreign workspace re
   assert.deepEqual(details.options, ["返回列表"]);
   assert.match(details.title, /foreign-session/);
   assert.match(details.title, /TODO #1/);
+  // Snippet and import live in the "new goal" submenu.
+  await rpc.select("＋ 新增目标");
+  const create = await rpc.select("返回");
+  assert.deepEqual(create.options, ["空白目标", "从 Snippet 创建", "导入 Goal 模板", "返回"]);
   await rpc.select("关闭");
   await pending;
+});
+
+test("real Pi RPC: /goal status shows TODO icons, notes and elapsed time; interrupted runs settle on load", { timeout: 60000 }, async (t) => {
+  const data = await fixture(t);
+  const { rpc, state } = await data.start();
+  const path = await seed(data.workspace, state.sessionId);
+  const goal = JSON.parse(await readFile(path, "utf8"));
+  const now = Date.now();
+  // A run killed mid-way: still "running" with an open run that last updated 3 minutes after it began.
+  Object.assign(goal, {
+    status: "running", elapsedMs: 10 * 60_000,
+    runStartedAt: new Date(now - 60 * 60_000).toISOString(), updatedAt: new Date(now - 57 * 60_000).toISOString(),
+    todos: [
+      { id: 1, text: "核验结果", status: "done", completedAt: new Date(now).toISOString(), evidence: "RPC 已核验" },
+      { id: 2, text: "等待权限", status: "blocked", evidence: "缺少访问权限" },
+      { id: 3, text: "收尾", status: "pending" },
+    ],
+  });
+  await writeFile(path, `${JSON.stringify(goal)}\n`);
+  await rpc.command("new_session");
+
+  const notice = () => rpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === "info");
+  await rpc.command("prompt", { message: "/goal status #1" });
+  const details = (await notice()).message;
+  assert.match(details, /^‖ 已暂停 · #1 真实 RPC 面板测试目标/);
+  assert.doesNotMatch(details, /\u001b/);
+  assert.match(details, /TODO 1\/3 · 累计执行 13 分钟 · 下一项：TODO #2/);
+  assert.match(details, /\n {2}✓ TODO #1 核验结果\n {6}完成于 .+ · 说明：RPC 已核验/);
+  assert.match(details, /\n {2}✗ TODO #2 等待权限\n {6}阻塞说明：缺少访问权限/);
+  assert.match(details, /\n {2}○ TODO #3 收尾/);
+  const saved = JSON.parse(await readFile(path, "utf8"));
+  assert.equal(saved.elapsedMs, 13 * 60_000);
+  assert.equal(saved.runStartedAt, undefined);
+
+  // Nothing is running and this new session owns no goals.
+  await rpc.command("prompt", { message: "/goal status" });
+  assert.match((await notice()).message, /当前 Session 没有未完成的目标/);
+  // "status" is a subcommand, not a new goal.
+  assert.equal((await readdir(join(data.workspace, ".pi", "goals"))).filter((file) => file.endsWith(".json")).length, 1);
+  const widget = rpc.records.filter((record) => record.method === "setWidget").at(-1);
+  assert.match(widget.widgetLines[0], /Goals · 1 个目标/);
 });

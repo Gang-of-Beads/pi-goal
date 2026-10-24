@@ -16,10 +16,11 @@
     "check": "pnpm typecheck && pnpm test:e2e"
   },
   "engines": { "node": ">=22.19.0" },
-  "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "@earendil-works/pi-ai": "*", "typebox": "*" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "@earendil-works/pi-ai": "*", "@earendil-works/pi-tui": "*", "typebox": "*" },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^1.1.0",
     "@earendil-works/pi-ai": "^1.1.0",
+    "@earendil-works/pi-tui": "^1.1.0",
     "@types/node": "^22.0.0",
     "typescript": "^7.0.2",
     "typebox": "^1.0.0"

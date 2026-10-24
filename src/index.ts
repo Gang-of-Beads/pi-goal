@@ -6,6 +6,8 @@ import { GoalStorage, knownWorkspaces, registerWorkspace } from "./storage.ts";
 import { parseGoalTemplate, readGoalTemplate, serializeGoalTemplate, writeGoalTemplate, type GoalTemplate } from "./sexp.ts";
 import { listSnippets, saveSnippet, validateSnippetName, type GoalSnippet } from "./snippets.ts";
 import { chooseMany, chooseOne, chooseYesNo } from "./choice.ts";
+import { showGoalPicker, showTodoList, type PickerView } from "./picker.ts";
+import { goalListLabel, goalStatusText, LABELS, plain, runningWidget, statusBarText, statusDetails, statusSummary, TODO_LABELS, todoLine, todoListLines, todoNote, trackElapsed, type Paint } from "./status.ts";
 
 const RUN_NOW = "确认并立即执行";
 const RUN_LATER = "确认，稍后从 /goal 执行";
@@ -40,6 +42,10 @@ export interface Goal {
   todos?: GoalTodo[];
   answers?: { question: string; answer: string }[];
   planConfirmed?: boolean;
+  /** Execution time of finished runs in milliseconds; paused time is excluded. */
+  elapsedMs?: number;
+  /** Start of the current run while the goal is running. */
+  runStartedAt?: string;
 }
 interface GoalState {
   goals: Goal[];
@@ -47,9 +53,6 @@ interface GoalState {
 }
 
 const STATE_TYPE = "pi-goal-state";
-const LABELS: Record<GoalStatus, string> = {
-  clarifying: "待澄清", pending: "待执行", running: "执行中", paused: "已暂停", review: "待确认", done: "已完成", cancelled: "已取消",
-};
 
 export function buildGoalPrompt(goal: string): string {
   return [
@@ -81,7 +84,9 @@ export function restoreGoals(entries: readonly SessionEntry[]): GoalState {
         (todo.evidence === undefined || typeof todo.evidence === "string")) && new Set(goal.todos.map((todo) => todo.id)).size === goal.todos.length)))) continue;
     if (!data.goals.every((goal) => (goal.uuid === undefined || (typeof goal.uuid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(goal.uuid))) &&
       [goal.createdAt, goal.updatedAt].every((time) => time === undefined || (typeof time === "string" && Number.isFinite(Date.parse(time)))) &&
-      (goal.history === undefined || Array.isArray(goal.history)))) continue;
+      (goal.history === undefined || Array.isArray(goal.history)) &&
+      (goal.elapsedMs === undefined || (typeof goal.elapsedMs === "number" && Number.isFinite(goal.elapsedMs) && goal.elapsedMs >= 0)) &&
+      (goal.runStartedAt === undefined || (typeof goal.runStartedAt === "string" && Number.isFinite(Date.parse(goal.runStartedAt)))))) continue;
     try { for (const goal of data.goals) serializeGoalTemplate(templateFromGoal(goal)); }
     catch { continue; }
     state = structuredClone({ goals: data.goals, nextId: data.nextId });
@@ -90,6 +95,8 @@ export function restoreGoals(entries: readonly SessionEntry[]): GoalState {
   for (const goal of state.goals) {
     if (goal.status === "running") goal.status = "paused";
     for (const todo of goal.todos ?? []) if (todo.status === "running") todo.status = "pending";
+    // An interrupted run (crash, killed process) ends at its last recorded update, not at reload time.
+    if (goal.runStartedAt) trackElapsed(goal, Math.max(Date.parse(goal.runStartedAt), Date.parse(goal.updatedAt ?? goal.runStartedAt)));
   }
   return state;
 }
@@ -145,17 +152,12 @@ function reviewInstructions(goal: Goal): string {
   ].join("\n\n");
 }
 
-const TODO_LABELS: Record<TodoStatus, string> = { pending: "待执行", running: "执行中", blocked: "阻塞", done: "已完成" };
 
 function todoLabel(todo: GoalTodo): string {
   const time = todo.completedAt ? ` · 完成于 ${new Date(todo.completedAt).toLocaleString()}` : "";
   return `TODO #${todo.id} [${TODO_LABELS[todo.status]}] ${todo.text.replace(/\s+/g, " ")}${time}`;
 }
 
-function goalLabel(goal: Goal): string {
-  const progress = goal.todos?.length ? ` · TODO ${goal.todos.filter((todo) => todo.status === "done").length}/${goal.todos.length}` : "";
-  return `#${goal.id} [${LABELS[goal.status]}] ${goal.text.replace(/\s+/g, " ")}${progress}`;
-}
 
 export default function goalExtension(pi: ExtensionAPI) {
   let state: GoalState = { goals: [], nextId: 1 };
@@ -170,11 +172,39 @@ export default function goalExtension(pi: ExtensionAPI) {
   let storageError: string | undefined;
   let persisted = new Map<string, string>();
 
+  let ticker: ReturnType<typeof setInterval> | undefined;
+  let tickerCtx: ExtensionContext | undefined;
+
+  function stopTicker() {
+    if (ticker) clearInterval(ticker);
+    ticker = undefined;
+    tickerCtx = undefined;
+  }
+
+  /** Theme colors in the TUI only; RPC clients and plain-text output never receive escape codes. */
+  function paintFor(ctx: ExtensionContext): Paint {
+    return ctx.mode === "tui" ? (color, text) => ctx.ui.theme.fg(color, text) : plain;
+  }
+
   function refresh(ctx: ExtensionContext) {
     if (!ctx.hasUI) return;
+    const paint = paintFor(ctx);
+    const running = state.goals.find((goal) => goal.status === "running" && goal.id === activeId);
+    ctx.ui.setStatus("pi-goal", running ? statusBarText(running, undefined, paint) : undefined);
+    if (running) {
+      // Elapsed time is shown in minutes, so a once-a-minute repaint keeps it current.
+      tickerCtx = ctx;
+      ticker ??= setInterval(() => {
+        try { if (tickerCtx) refresh(tickerCtx); } catch { stopTicker(); }
+      }, 60_000);
+      ticker.unref?.();
+      ctx.ui.setWidget("pi-goal", runningWidget(running, undefined, paint));
+      return;
+    }
+    stopTicker();
     ctx.ui.setWidget("pi-goal", state.goals.length ? [
       `Goals · ${state.goals.length} 个目标 · /goal 管理`,
-      ...state.goals.slice(0, 5).map(goalLabel),
+      ...state.goals.slice(0, 5).map((goal) => goalListLabel(goal, paint)),
       ...(state.goals.length > 5 ? [`… 另有 ${state.goals.length - 5} 个目标，打开 /goal 查看全部`] : []),
     ] : undefined);
   }
@@ -185,6 +215,7 @@ export default function goalExtension(pi: ExtensionAPI) {
     for (const goal of state.goals) {
       goal.uuid ??= uuidv7();
       goal.createdAt ??= new Date().toISOString();
+      trackElapsed(goal);
       const content = JSON.stringify(goal);
       if (persisted.get(goal.uuid) === content) continue;
       goal.updatedAt = new Date().toISOString();
@@ -469,6 +500,7 @@ export default function goalExtension(pi: ExtensionAPI) {
     }
     activeId = undefined;
     autoStartId = undefined;
+    stopTicker();
     generation++;
   });
 
@@ -511,14 +543,26 @@ export default function goalExtension(pi: ExtensionAPI) {
   }
 
   async function todoPanel(goal: Goal, ctx: ExtensionCommandContext, isCurrent: () => boolean) {
+    const paint = paintFor(ctx);
+    let index = 0;
     while (isCurrent()) {
       const todos = goal.todos ?? [];
-      const labels = todos.map(todoLabel);
-      const selected = await ctx.ui.select(`目标 #${goal.id} · TODO ${todos.filter((todo) => todo.status === "done").length}/${todos.length}`, [...labels, "返回目标列表"]);
-      if (!isCurrent() || !selected || selected === "返回目标列表") return;
-      const todo = todos[labels.indexOf(selected)];
+      const title = `目标 #${goal.id} · TODO ${todos.filter((todo) => todo.status === "done").length}/${todos.length}`;
+      let todo: GoalTodo | undefined;
+      if (ctx.mode === "tui") {
+        const picked = await showTodoList(ctx, title, todos, index);
+        if (!isCurrent() || picked === undefined) return;
+        index = picked;
+        todo = todos[picked];
+      } else {
+        // Dialog-only clients: one line per TODO, symbol plus note.
+        const labels = todos.map((item) => [todoLine(item), todoNote(item)].filter(Boolean).join(" · "));
+        const selected = await ctx.ui.select(title, [...labels, "返回目标列表"]);
+        if (!isCurrent() || !selected || selected === "返回目标列表") return;
+        todo = todos[labels.indexOf(selected)];
+      }
       if (!todo) continue;
-      const action = await ctx.ui.select(`${todoLabel(todo)}${todo.evidence ? `\n完成 / 阻塞说明：${todo.evidence}` : ""}`, [
+      const action = await ctx.ui.select(todoListLines(todo, paint).join("\n"), [
         todo.status === "done" ? "重新打开 TODO" : "标记 TODO 完成", "返回 TODO",
       ]);
       if (!isCurrent()) return;
@@ -664,17 +708,16 @@ export default function goalExtension(pi: ExtensionAPI) {
     try { await action(); } catch (error) { ctx.ui.notify(`Goal 模板操作失败：${String(error)}`, "error"); }
   }
 
-  function goalDetails(goal: Goal): string {
+  function goalDetails(goal: Goal, paint: Paint = plain): string {
     return [
-      goalLabel(goal), `Workspace: ${goal.workspace}`, `Session: ${goal.sessionId ?? "未知"}`, `UUID: ${goal.uuid}`,
-      ...(goal.todos ?? []).map((todo) => `${todoLabel(todo)}${todo.evidence ? ` · ${todo.evidence}` : ""}`),
+      `${goalStatusText(goal, paint)} · #${goal.id} ${goal.text.replace(/\s+/g, " ")}`, `Workspace: ${goal.workspace}`, `Session: ${goal.sessionId ?? "未知"}`, `UUID: ${goal.uuid}`,
+      ...(goal.todos ?? []).flatMap((todo) => todoListLines(todo, paint, "  ")),
       "", serializeGoalTemplate(templateFromGoal(goal)),
     ].join("\n");
   }
 
-  /** One action on a goal in the current workspace. "exit" closes the panel (a run started). */
-  async function goalMenu(goal: Goal, ctx: ExtensionCommandContext, isCurrent: () => boolean): Promise<"exit" | "back" | "done"> {
-    const actions = [
+  function menuActions(goal: Goal): string[] {
+    return [
       "查看目标定义", "展开 TODO",
       ...(goal.status === "running" || activeId === goal.id ? ["暂停"] : [goal.planConfirmed ? "执行 / 继续" : "继续澄清"]),
       "修改",
@@ -682,9 +725,18 @@ export default function goalExtension(pi: ExtensionAPI) {
       ...(goal.status === "running" ? [] : [goal.status === "done" ? "重新打开" : "标记完成"]),
       "导出 Goal 模板", "保存为 Snippet", "取消目标", "删除", "返回列表",
     ];
-    const action = await ctx.ui.select(goalLabel(goal), actions);
+  }
+
+  /** One action on a goal in the current workspace. "exit" closes the panel (a run started). */
+  async function goalMenu(goal: Goal, ctx: ExtensionCommandContext, isCurrent: () => boolean): Promise<"exit" | "back" | "done"> {
+    const action = await ctx.ui.select(goalListLabel(goal, paintFor(ctx)), menuActions(goal));
     if (!isCurrent()) return "exit";
     if (!action || action === "返回列表") return "back";
+    return runAction(goal, action, ctx, isCurrent);
+  }
+
+  /** Shared by the action menu and panel shortcuts, so both apply the same state checks. */
+  async function runAction(goal: Goal, action: string, ctx: ExtensionCommandContext, isCurrent: () => boolean): Promise<"exit" | "back" | "done"> {
     // A run may have settled while a dialog was open; operations check live state.
     if (action === "查看目标定义") {
       await ctx.ui.select(serializeGoalTemplate(templateFromGoal(goal)), ["返回列表"]);
@@ -746,17 +798,82 @@ export default function goalExtension(pi: ExtensionAPI) {
     return "done";
   }
 
+  /** New goal from scratch, a snippet or an imported template. Returns true when an AI turn started. */
+  async function newGoalMenu(ctx: ExtensionCommandContext, isCurrent: () => boolean): Promise<boolean> {
+    const choice = await ctx.ui.select("新增目标", ["空白目标", "从 Snippet 创建", "导入 Goal 模板", "返回"]);
+    if (!isCurrent() || !choice || choice === "返回") return false;
+    if (choice === "从 Snippet 创建") {
+      let started = false;
+      await sharing(async () => { started = await pickSnippet(ctx); }, ctx);
+      return started;
+    }
+    if (choice === "导入 Goal 模板") {
+      const path = await ctx.ui.editor("导入 .goal.sexp 文件路径（相对 workspace 或绝对路径）");
+      if (isCurrent() && path?.trim()) await sharing(() => importTemplate(path.trim(), ctx), ctx);
+      return false;
+    }
+    const text = await ctx.ui.editor("新增目标（接下来由 AI 提问澄清并确认 TODO）");
+    if (!isCurrent() || !text?.trim()) return false;
+    const goal = add(text, ctx);
+    return !!goal && clarify(goal, ctx);
+  }
+
+  /** Panel shortcut on a goal of the current workspace; mirrors the action menu's availability. */
+  async function shortcut(goal: Goal, key: string, ctx: ExtensionCommandContext, isCurrent: () => boolean): Promise<"exit" | "back" | "done"> {
+    const active = goal.status === "running" || activeId === goal.id;
+    if (key === "s") {
+      await ctx.ui.select(statusDetails(goal, undefined, paintFor(ctx)), ["返回面板"]);
+      return "done";
+    }
+    if (key === "r" && active) {
+      ctx.ui.notify(`目标 #${goal.id} 正在执行；按 p 暂停。`, "info");
+      return "done";
+    }
+    if (key === "p" && !active && (goal.status === "done" || goal.status === "paused")) {
+      ctx.ui.notify(`目标 #${goal.id} 未在执行，无需暂停。`, "info");
+      return "done";
+    }
+    const action = { r: goal.planConfirmed ? "执行 / 继续" : "继续澄清", p: "暂停", t: "展开 TODO", e: "修改", c: "取消目标", d: "删除" }[key];
+    return action ? runAction(goal, action, ctx, isCurrent) : "done";
+  }
+
+  /** TUI goal manager: one bordered picker; actions return to it with scope, search and selection kept. */
+  async function tuiPanel(ctx: ExtensionCommandContext, isCurrent: () => boolean) {
+    const view: PickerView = { scope: 0, query: "", searching: false };
+    while (isCurrent()) {
+      const result = await showGoalPicker(ctx, sections(ctx), view);
+      if (!isCurrent() || result.type === "close") return;
+      if (result.type === "key" && result.key === "n") {
+        if (await newGoalMenu(ctx, isCurrent)) return;
+        continue;
+      }
+      const goal = result.goal;
+      if (!goal) {
+        ctx.ui.notify("当前范围没有目标；按 n 新增或 Tab 切换范围。", "info");
+        continue;
+      }
+      if (!state.goals.includes(goal)) {
+        // Goals of other workspaces are read-only here.
+        if (result.type === "open") await ctx.ui.select(goalDetails(goal, paintFor(ctx)), ["返回面板"]);
+        else if (result.key === "s") await ctx.ui.select(statusDetails(goal, undefined, paintFor(ctx)), ["返回面板"]);
+        else ctx.ui.notify(`此目标属于 ${goal.workspace}，只读；请在对应 workspace 中执行或修改。`, "info");
+        continue;
+      }
+      const outcome = result.type === "open" ? await goalMenu(goal, ctx, isCurrent) : await shortcut(goal, result.key, ctx, isCurrent);
+      if (outcome === "exit") return;
+    }
+  }
+
   /** The /goal panel. With initial, it opens that goal's action menu directly and closes when the user leaves it. */
   async function panel(ctx: ExtensionCommandContext, initial?: Goal) {
     if (!ctx.hasUI) {
-      ctx.ui.notify(initial ? goalDetails(initial) : sections(ctx).map((section) => `${section.title} (${section.goals.length})\n${section.goals.map((goal) => [goalLabel(goal), ...(goal.todos ?? []).map((todo) => `  ${todoLabel(todo)}`)].join("\n")).join("\n") || "暂无目标"}`).join("\n\n"), "info");
+      ctx.ui.notify(initial ? goalDetails(initial) : sections(ctx).map((section) => `${section.title} (${section.goals.length})\n${section.goals.map((goal) => [goalListLabel(goal), ...(goal.todos ?? []).flatMap((todo) => todoListLines(todo, plain, "  "))].join("\n")).join("\n") || "暂无目标"}`).join("\n\n"), "info");
       return;
     }
     if (panelOpen) return;
     panelOpen = true;
     const currentGeneration = generation;
     const isCurrent = () => generation === currentGeneration;
-    let scope: number | undefined;
     try {
       if (initial) {
         while (isCurrent() && state.goals.includes(initial)) {
@@ -764,46 +881,20 @@ export default function goalExtension(pi: ExtensionAPI) {
         }
         return;
       }
+      if (ctx.mode === "tui") return await tuiPanel(ctx, isCurrent);
+      // Dialog-only clients (RPC): select lists, starting with the current session.
+      let scope = 0;
       while (isCurrent()) {
         const groups = sections(ctx);
-        if (scope === undefined) {
-          const labels = groups.map((group) => `${group.title} (${group.goals.length})`);
-          const selectedScope = await ctx.ui.select("Goals · 选择范围", [...labels, "＋ 新增目标", "从 Snippet 创建", "导入 Goal 模板", "关闭"]);
-          if (!isCurrent() || !selectedScope || selectedScope === "关闭") return;
-          if (selectedScope === "从 Snippet 创建") {
-            let started = false;
-            await sharing(async () => { started = await pickSnippet(ctx); }, ctx);
-            if (started || !isCurrent()) return;
-            continue;
-          }
-          if (selectedScope === "导入 Goal 模板") {
-            const path = await ctx.ui.editor("导入 .goal.sexp 文件路径（相对 workspace 或绝对路径）");
-            if (!isCurrent()) return;
-            if (path?.trim()) await sharing(() => importTemplate(path.trim(), ctx), ctx);
-            continue;
-          }
-          if (selectedScope === "＋ 新增目标") {
-            const text = await ctx.ui.editor("新增目标（接下来由 AI 提问澄清并确认 TODO）");
-            if (!isCurrent()) return;
-            const goal = text?.trim() ? add(text, ctx) : undefined;
-            if (goal && clarify(goal, ctx)) return;
-            continue;
-          }
-          scope = labels.indexOf(selectedScope);
-          if (scope < 0) { scope = undefined; continue; }
-        }
         const group = groups[scope]!;
-        const choices = group.goals.map((goal) => `${goalLabel(goal)}${scope === 2 ? ` · ${goal.workspace} · ${goal.uuid?.slice(0, 8)}` : ""}`);
-        const selected = await ctx.ui.select(`Goals · ${group.title} · ${group.goals.length} 个目标`, ["＋ 新增目标", ...choices, "返回分区", "关闭"]);
+        const choices = group.goals.map((goal) => `${goalListLabel(goal)}${scope === 2 ? ` · ${goal.workspace} · ${goal.uuid?.slice(0, 8)}` : ""}`);
+        const switches = groups.map((other, index) => ({ index, label: `切换到：${other.title} (${other.goals.length})` })).filter((item) => item.index !== scope);
+        const selected = await ctx.ui.select(`Goals · ${group.title} · ${group.goals.length} 个目标`, ["＋ 新增目标", ...choices, ...switches.map((item) => item.label), "关闭"]);
         if (!isCurrent() || !selected || selected === "关闭") return;
-        if (selected === "返回分区") { scope = undefined; continue; }
+        const target = switches.find((item) => item.label === selected);
+        if (target) { scope = target.index; continue; }
         if (selected === "＋ 新增目标") {
-          const text = await ctx.ui.editor("新增目标（接下来由 AI 提问澄清并确认 TODO）");
-          if (!isCurrent()) return;
-          if (text?.trim()) {
-            const goal = add(text, ctx);
-            if (goal && clarify(goal, ctx)) return;
-          }
+          if (await newGoalMenu(ctx, isCurrent)) return;
           continue;
         }
         const goal = group.goals[choices.indexOf(selected)];
@@ -821,9 +912,10 @@ export default function goalExtension(pi: ExtensionAPI) {
   }
 
   const USAGE = [
-    "/goal                          打开目标面板（Session / Workspace / 所有 Goal）",
+    "/goal                          打开目标面板（默认当前 Session；TUI 中 Tab 切换 Workspace / 所有 Goal）",
     "/goal <任务>                   新增目标并交互式澄清 TODO",
     "/goal #<编号>                  直接打开当前 workspace 的某个目标",
+    "/goal status [#编号]           查看目标状态（默认：执行中目标或当前 Session 未完成目标）",
     "/goal @                        选择 Snippet 创建目标",
     "/goal @<snippet> [补充信息]    用 Snippet 创建目标",
     "/goal import <文件.goal.sexp>  导入模板",
@@ -836,6 +928,16 @@ export default function goalExtension(pi: ExtensionAPI) {
     const goal = state.goals.find((item) => item.id === Number(id));
     if (!goal) ctx.ui.notify(`当前 workspace 没有目标 #${id}。用 /goal 查看列表。`, "warning");
     return goal;
+  }
+
+  function statusCommand(id: string | undefined, ctx: ExtensionContext) {
+    if (id) {
+      const goal = findGoal(id, ctx);
+      if (goal) ctx.ui.notify(statusDetails(goal, undefined, paintFor(ctx)), "info");
+      return;
+    }
+    const running = state.goals.find((goal) => goal.status === "running" && goal.id === activeId);
+    ctx.ui.notify(running ? statusDetails(running, undefined, paintFor(ctx)) : statusSummary(state.goals.filter((goal) => goal.sessionId === ctx.sessionManager.getSessionId()), undefined, paintFor(ctx)), "info");
   }
 
   async function snippetCommand(name: string, context: string, ctx: ExtensionCommandContext) {
@@ -873,6 +975,10 @@ export default function goalExtension(pi: ExtensionAPI) {
       if (goal) await panel(ctx, goal);
       return;
     }
+    if ((match = /^status(?:\s+#?(\d+))?$/.exec(text))) {
+      statusCommand(match[1], ctx);
+      return;
+    }
     if (/^\d+$/.test(text)) {
       // A bare number is ambiguous (task text vs. goal ID); require the explicit #<id> form.
       ctx.ui.notify(`打开目标请用 /goal #${text}；如需新建目标，请写明任务内容。`, "warning");
@@ -890,7 +996,7 @@ export default function goalExtension(pi: ExtensionAPI) {
   }
 
   pi.registerCommand("goal", {
-    description: "目标统一入口：/goal [任务 | 编号 | @snippet | import | export | help]",
+    description: "目标统一入口：/goal [任务 | #编号 | status | @snippet | import | export | help]",
     getArgumentCompletions: (prefix) => {
       const trimmed = prefix.trimStart();
       if (trimmed.startsWith("@")) {
@@ -900,6 +1006,8 @@ export default function goalExtension(pi: ExtensionAPI) {
         } catch { return null; }
       }
       const items = [
+        { value: "status", label: "status [#编号]", description: "查看目标状态与 TODO 进度" },
+        ...(trimmed.startsWith("status ") ? state.goals : []).map((goal) => ({ value: `status #${goal.id}`, label: `status #${goal.id}`, description: goal.text.split("\n")[0] })),
         { value: "@", label: "@<snippet>", description: "用 Snippet 创建目标" },
         { value: "import ", label: "import <文件.goal.sexp>", description: "导入模板" },
         { value: "export ", label: "export <编号> [文件 | @名称]", description: "导出模板或保存为 Snippet" },
