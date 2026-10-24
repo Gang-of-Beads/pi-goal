@@ -61,6 +61,24 @@ export class GoalStorage {
     });
   }
 
+  /** Highest display ID currently on disk, including goals created by other sessions after load. */
+  maxId(): number {
+    let names: string[];
+    try { names = readdirSync(this.directory); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw error;
+    }
+    let max = 0;
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      try {
+        const id = (JSON.parse(readFileSync(join(this.directory, name), "utf8")) as { id?: unknown }).id;
+        if (Number.isSafeInteger(id) && (id as number) > max) max = id as number;
+      } catch { /* Unreadable files are reported by load(); they cannot reserve an ID. */ }
+    }
+    return max;
+  }
+
   private checkUnchanged(uuid: string) {
     let content: string | undefined;
     try { content = readFileSync(this.path(uuid), "utf8"); } catch (error) {

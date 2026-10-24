@@ -190,9 +190,21 @@ export default function goalExtension(pi: ExtensionAPI) {
   }
   pi.on("session_start", (_event, ctx) => restore(ctx));
 
+  /**
+   * Another session in the same workspace may have created goals since this session loaded.
+   * Reusing their display ID would make every later load reject the whole workspace.
+   */
+  function allocateId(ctx: ExtensionContext): number {
+    if (storageError) throw new Error(storageError);
+    storage ??= new GoalStorage(ctx.cwd);
+    const id = Math.max(state.nextId, storage.maxId() + 1);
+    state.nextId = id + 1;
+    return id;
+  }
+
   function add(text: string, ctx: ExtensionContext): Goal {
     const now = new Date().toISOString();
-    const goal: Goal = { id: state.nextId++, uuid: uuidv7(), workspace: resolve(ctx.cwd), sessionId: ctx.sessionManager.getSessionId(), createdAt: now, updatedAt: now, text: text.trim(), status: "clarifying", todos: [], answers: [], planConfirmed: false };
+    const goal: Goal = { id: allocateId(ctx), uuid: uuidv7(), workspace: resolve(ctx.cwd), sessionId: ctx.sessionManager.getSessionId(), createdAt: now, updatedAt: now, text: text.trim(), status: "clarifying", todos: [], answers: [], planConfirmed: false };
     state.goals.push(goal);
     save(ctx);
     return goal;
@@ -491,7 +503,7 @@ export default function goalExtension(pi: ExtensionAPI) {
     if (!confirmed || generation !== currentGeneration) return undefined;
     const now = new Date().toISOString();
     const goal: Goal = {
-      id: state.nextId++, uuid: uuidv7(), workspace: resolve(ctx.cwd), sessionId: ctx.sessionManager.getSessionId(),
+      id: allocateId(ctx), uuid: uuidv7(), workspace: resolve(ctx.cwd), sessionId: ctx.sessionManager.getSessionId(),
       createdAt: now, updatedAt: now, text: template.title, constraints: template.constraints, acceptance: template.acceptance,
       objective: template.objective, benchmarks: template.benchmarks, checks: template.checks, reviewLoop: template.reviewLoop,
       todos: template.todos.map((text, index) => ({ id: index + 1, text, status: "pending" })), answers: [],
