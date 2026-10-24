@@ -5,6 +5,12 @@ import { uuidv7 } from "@earendil-works/pi-ai";
 import { GoalStorage, knownWorkspaces, registerWorkspace } from "./storage.ts";
 import { parseGoalTemplate, readGoalTemplate, serializeGoalTemplate, writeGoalTemplate, type GoalTemplate } from "./sexp.ts";
 import { listSnippets, saveSnippet, validateSnippetName, type GoalSnippet } from "./snippets.ts";
+import { chooseMany, chooseOne, chooseYesNo } from "./choice.ts";
+
+const RUN_NOW = "确认并立即执行";
+const RUN_LATER = "确认，稍后从 /goal 执行";
+const EDIT_TODOS = "编辑 TODO";
+const CANCEL_PLAN = "取消";
 
 export type GoalStatus = "clarifying" | "pending" | "running" | "paused" | "review" | "done" | "cancelled";
 export type TodoStatus = "pending" | "running" | "blocked" | "done";
@@ -155,6 +161,8 @@ export default function goalExtension(pi: ExtensionAPI) {
   let state: GoalState = { goals: [], nextId: 1 };
   let activeId: number | undefined;
   let planningId: number | undefined;
+  /** Goal confirmed with "run now"; started once the planning run settles. */
+  let autoStartId: number | undefined;
   let runFailed = false;
   let generation = 0;
   let panelOpen = false;
@@ -194,6 +202,7 @@ export default function goalExtension(pi: ExtensionAPI) {
     generation++;
     activeId = undefined;
     planningId = undefined;
+    autoStartId = undefined;
     runFailed = false;
     storage = new GoalStorage(ctx.cwd);
     storageError = undefined;
@@ -302,7 +311,8 @@ export default function goalExtension(pi: ExtensionAPI) {
         "Preserve the structured objective, benchmarks, checks and bounded review loop when planning TODOs. Clarify the actual page URL, reference entries, target devices and access needed for visual verification. A review loop here is a plan, not authorization to execute it during clarification.",
         "This is planning only. Do not change files, resources, install dependencies, or execute the goal. Read relevant project context only when necessary.",
         "Use goal_plan action ask to ask a few focused, goal-specific questions one at a time: scope, desired output, acceptance criteria, constraints, and exclusions. Ask follow-up questions only for unresolved essentials; do not invent my answers.",
-        "After clarification, use goal_plan action confirm with a concrete ordered TODO list including acceptance/verification steps, plus constraints and acceptance arrays reflecting my confirmed answers. The plugin will let me review/edit and explicitly confirm it. Never execute the plan in this turn, even after confirmation. If a dialog is cancelled, stop planning until I ask to continue. Preserve existing instructions and approval boundaries.",
+        "Make each question easy to answer by keyboard: ask one decision per call. When there are a few likely answers, pass them as options (concise, mutually distinct, recommended first; set multiple=true when several can apply). For a yes/no decision use kind \"confirm\" without options. The plugin always adds an 'other (custom input)' choice, so do not add one yourself. Use plain free-text questions only when answers cannot be enumerated.",
+        "After clarification, use goal_plan action confirm with a concrete ordered TODO list including acceptance/verification steps, plus constraints and acceptance arrays reflecting my confirmed answers. The plugin will let me review/edit and choose to start execution now or later. Never execute the plan yourself in this turn, even after confirmation; if I choose to run now, the plugin starts execution in a new turn. If a dialog is cancelled, stop planning until I ask to continue. Preserve existing instructions and approval boundaries.",
       ].join("\n\n"));
     } catch (error) {
       activeId = undefined;
@@ -317,12 +327,15 @@ export default function goalExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "goal_plan",
     label: "Goal planning",
-    description: "Interactively clarify a goal and confirm its TODO plan. Use only for the goal currently being clarified. ask opens a question dialog; confirm opens an editable TODO review and requires user confirmation. Never execute a goal during planning.",
+    description: "Interactively clarify a goal and confirm its TODO plan. Use only for the goal currently being clarified. ask opens a question dialog: with options the user picks by keyboard (multiple=true for a checklist), kind=\"confirm\" asks yes/no, otherwise free text; an 'other (custom input)' choice is always added. confirm opens a TODO review where the user confirms and chooses to run now or later. Never execute a goal yourself during planning.",
     exposure: "model-only",
     parameters: Type.Object({
       goalId: Type.Integer({ minimum: 1 }),
       action: Type.Union([Type.Literal("ask"), Type.Literal("confirm")]),
       question: Type.Optional(Type.String()),
+      options: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: "ask only: candidate answers chosen by keyboard. Do not include an 'other' option; the plugin adds it." })),
+      multiple: Type.Optional(Type.Boolean({ description: "ask only: allow selecting several options." })),
+      kind: Type.Optional(Type.Union([Type.Literal("text"), Type.Literal("confirm")], { description: "ask only: confirm asks a yes/no question; text (default) uses options when given, otherwise free text." })),
       todos: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
       constraints: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
       acceptance: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
@@ -339,10 +352,16 @@ export default function goalExtension(pi: ExtensionAPI) {
         return { content: [{ type: "text" as const, text: "Planning stopped. Do not execute or ask more questions until the user resumes." }], details: undefined };
       };
       if (params.action === "ask") {
-        if (!params.question?.trim()) throw new Error("A question is required.");
-        const answer = await ctx.ui.editor(`目标 #${goal.id} · ${params.question.trim()}`);
+        const question = params.question?.trim();
+        if (!question) throw new Error("A question is required.");
+        const title = `目标 #${goal.id} · ${question}`;
+        let answer: string | undefined;
+        if (params.kind === "confirm") answer = await chooseYesNo(ctx, title);
+        else if (params.options?.length && params.multiple) answer = (await chooseMany(ctx, title, params.options))?.join("；");
+        else if (params.options?.length) answer = await chooseOne(ctx, title, params.options);
+        else answer = await ctx.ui.editor(title);
         if (!valid() || !answer?.trim()) return stopped();
-        (goal.answers ??= []).push({ question: params.question.trim(), answer: answer.trim() });
+        (goal.answers ??= []).push({ question, answer: answer.trim() });
         save(ctx);
         return { content: [{ type: "text", text: answer.trim() }], details: undefined };
       }
@@ -352,12 +371,19 @@ export default function goalExtension(pi: ExtensionAPI) {
       const constraints = params.constraints?.map((text) => text.trim()) ?? definition.constraints;
       const acceptance = params.acceptance?.map((text) => text.trim()) ?? definition.acceptance;
       if ([...constraints, ...acceptance].some((text) => !text)) throw new Error("Constraints and acceptance criteria must not be blank.");
-      const edited = await ctx.ui.editor(`目标 #${goal.id} · 审阅 TODO（每行一项，可修改）`, params.todos.map((text) => text.trim()).join("\n"));
-      if (!valid() || !edited?.trim()) return stopped();
-      const texts = edited.split("\n").map((text) => text.trim()).filter(Boolean);
-      if (!texts.length) return stopped();
-      const confirmed = await ctx.ui.confirm(`确认目标 #${goal.id} 的 ${texts.length} 项 TODO？`, `${serializeGoalTemplate({ ...definition, constraints, acceptance, todos: texts })}\n\n确认后仅保存，不自动执行。`);
-      if (!valid() || !confirmed) return stopped();
+      let texts = params.todos.map((text) => text.trim());
+      let choice: string | undefined;
+      // One keyboard step: the first option (run now) is the default cursor position.
+      for (;;) {
+        choice = await ctx.ui.select(`确认目标 #${goal.id} 的 ${texts.length} 项 TODO？\n\n${serializeGoalTemplate({ ...definition, constraints, acceptance, todos: texts })}`, [RUN_NOW, RUN_LATER, EDIT_TODOS, CANCEL_PLAN]);
+        if (!valid() || !choice || choice === CANCEL_PLAN) return stopped();
+        if (choice !== EDIT_TODOS) break;
+        const edited = await ctx.ui.editor(`目标 #${goal.id} · 编辑 TODO（每行一项）`, texts.join("\n"));
+        if (!valid()) return stopped();
+        const lines = edited?.split("\n").map((text) => text.trim()).filter(Boolean) ?? [];
+        if (lines.length) texts = lines;
+        else ctx.ui.notify("TODO 未修改（编辑已取消或内容为空）。", "info");
+      }
       goal.todos = texts.map((text, index) => ({ id: index + 1, text, status: "pending" }));
       goal.constraints = constraints;
       goal.acceptance = acceptance;
@@ -369,6 +395,10 @@ export default function goalExtension(pi: ExtensionAPI) {
       goal.status = "pending";
       planningId = undefined;
       save(ctx);
+      if (choice === RUN_NOW) {
+        autoStartId = goal.id;
+        return { content: [{ type: "text", text: "TODO plan confirmed and saved. The user chose to run it now: the plugin starts execution automatically in a new turn after this one. End this turn now with a brief acknowledgement; do not start any task work here." }], details: undefined };
+      }
       return { content: [{ type: "text", text: "TODO plan confirmed and saved. Stop here; the user will start execution from /goal. Do not execute any tasks now." }], details: undefined };
     },
   });
@@ -418,6 +448,14 @@ export default function goalExtension(pi: ExtensionAPI) {
       if (planningId === goal.id) planningId = undefined;
       return;
     }
+    if (autoStartId === goal.id) {
+      autoStartId = undefined;
+      if (goal.status !== "pending" || !goal.planConfirmed) return;
+      // Prompts sent while settling are deferred by Pi until the planning run has fully ended.
+      if (event.aborted || runFailed) ctx.ui.notify(`目标 #${goal.id} 已确认，但规划运行被中断，未自动执行；可在 /goal 中启动。`, "warning");
+      else start(goal, ctx);
+      return;
+    }
     if (goal.status !== "running") return;
     for (const todo of goal.todos ?? []) if (todo.status === "running") todo.status = "pending";
     goal.status = event.aborted || runFailed ? "paused" : "review";
@@ -430,6 +468,7 @@ export default function goalExtension(pi: ExtensionAPI) {
       save(ctx);
     }
     activeId = undefined;
+    autoStartId = undefined;
     generation++;
   });
 
