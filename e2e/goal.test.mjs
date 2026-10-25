@@ -171,6 +171,8 @@ test("real Pi RPC: TODO completion, timestamp, cancellation, restart and deletio
   await pending;
   const completed = JSON.parse(await readFile(path, "utf8"));
   assert.equal(completed.todos[0].status, "done");
+  // Completing the last TODO completes the goal.
+  assert.equal(completed.status, "done");
   assert.ok(Number.isFinite(Date.parse(completed.todos[0].completedAt)));
   assert.equal(completed.todos[0].evidence, "实际 RPC 人工验证通过");
   assert.deepEqual(JSON.parse(await readFile(join(dirname(path), "workspace.json"), "utf8")), { workspace: fixtureData.workspace });
@@ -178,7 +180,9 @@ test("real Pi RPC: TODO completion, timestamp, cancellation, restart and deletio
   assert.ok(completed.history.length > 0);
 
   ({ pending } = await openGoal(rpc));
-  await rpc.select("取消目标");
+  const doneMenu = await rpc.dialog("select");
+  assert.deepEqual(doneMenu.options.slice(0, 3), ["重新打开", "执行 / 继续", "展开 TODO"]);
+  rpc.respond(doneMenu, { value: "取消目标" });
   const cancellation = await rpc.select("取消目标，保留已有操作");
   assert.ok(cancellation.options.includes("取消目标，回滚所有操作"));
   await rpc.select("关闭");
@@ -401,6 +405,8 @@ test("real Pi RPC: /goal is the single entry point; auxiliary commands are alias
   let pending = rpc.command("prompt", { message: "/goal #1" });
   const menu = await rpc.select("\u5c55\u5f00 TODO");
   assert.match(menu.title, /^○ #1 /);
+  // Most likely action first: an unfinished plan starts with run / continue.
+  assert.deepEqual(menu.options.slice(0, 3), ["执行 / 继续", "标记完成", "展开 TODO"]);
   await rpc.select("\u8fd4\u56de\u76ee\u6807\u5217\u8868");
   await rpc.select("\u53d6\u6d88\u76ee\u6807");
   await rpc.select("\u53d6\u6d88\u76ee\u6807\uff0c\u4fdd\u7559\u5df2\u6709\u64cd\u4f5c");

@@ -189,6 +189,19 @@ function todoLabel(todo: GoalTodo): string {
 }
 
 
+/** A confirmed plan whose TODOs are all done: the goal itself is complete. */
+function allTodosDone(goal: Goal): boolean {
+  return !!goal.planConfirmed && !!goal.todos?.length && goal.todos.every((todo) => todo.status === "done");
+}
+
+/**
+ * Whether finishing every TODO completes the goal on its own. Goals with a design objective or review
+ * loop require the user's final review, so they stay awaiting review until marked done by hand.
+ */
+function autoCompletes(goal: Goal): boolean {
+  return allTodosDone(goal) && !goal.objective && !goal.reviewLoop;
+}
+
 export default function goalExtension(pi: ExtensionAPI) {
   let state: GoalState = { goals: [], nextId: 1 };
   let activeId: number | undefined;
@@ -565,6 +578,11 @@ export default function goalExtension(pi: ExtensionAPI) {
     if (goal.status !== "running") return;
     for (const todo of goal.todos ?? []) if (todo.status === "running") todo.status = "pending";
     goal.status = event.aborted || runFailed ? "paused" : "review";
+    // Every TODO done (each with verification evidence): mark the goal done; it can be reopened.
+    if (goal.status === "review" && autoCompletes(goal)) {
+      goal.status = "done";
+      ctx.ui.notify(`目标 #${goal.id} 的 TODO 已全部完成，已自动标记完成；如需继续可在 /goal 中重新打开。`, "info");
+    }
     // Unfinished work after a run that worked on the goal: my next message continues it (once).
     resumableId = goal.status === "review" && runWorked && goal.todos?.some((todo) => todo.status !== "done") ? goal.id : undefined;
     runWorked = false;
@@ -696,6 +714,10 @@ export default function goalExtension(pi: ExtensionAPI) {
         todo.status = "done";
         todo.completedAt = new Date().toISOString();
         todo.evidence = evidence.trim();
+        if (autoCompletes(goal) && goal.status !== "done") {
+          goal.status = "done";
+          ctx.ui.notify(`目标 #${goal.id} 的 TODO 已全部完成，已自动标记完成。`, "info");
+        }
       } else {
         todo.status = "pending";
         todo.completedAt = undefined;
@@ -837,13 +859,20 @@ export default function goalExtension(pi: ExtensionAPI) {
     ].join("\n");
   }
 
+  /**
+   * Most likely action first (pause a running goal, reopen a done one, mark done once every TODO is
+   * done, otherwise run / continue), then the other frequent actions, then sharing and destructive ones.
+   */
   function menuActions(goal: Goal): string[] {
+    const active = goal.status === "running" || activeId === goal.id;
+    const run = goal.planConfirmed ? "执行 / 继续" : "继续澄清";
+    const primary = active ? "暂停" : goal.status === "done" ? "重新打开" : allTodosDone(goal) ? "标记完成" : run;
     return [
-      "查看目标定义", "展开 TODO",
-      ...(goal.status === "running" || activeId === goal.id ? ["暂停"] : [goal.planConfirmed ? "执行 / 继续" : "继续澄清"]),
-      "修改",
-      ...(goal.status === "running" || goal.status === "done" || goal.status === "paused" ? [] : ["暂停"]),
-      ...(goal.status === "running" ? [] : [goal.status === "done" ? "重新打开" : "标记完成"]),
+      primary,
+      ...(!active && primary !== run ? [run] : []),
+      ...(!active && goal.status !== "done" && primary !== "标记完成" ? ["标记完成"] : []),
+      "展开 TODO", "查看目标定义", "修改",
+      ...(active || goal.status === "done" || goal.status === "paused" ? [] : ["暂停"]),
       "导出 Goal 模板", "保存为 Snippet", "取消目标", "删除", "返回列表",
     ];
   }

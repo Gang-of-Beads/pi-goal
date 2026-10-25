@@ -2,7 +2,7 @@ English | [中文](storage.zh-CN.md)
 
 # Storage
 
-Goal states: `awaiting clarification → TODOs confirmed → pending → running → awaiting review`; a goal can also become `paused` or `cancelled`, or be marked `done` by you. An AI turn ending does not mean the goal is done, so success is never marked automatically; aborted runs and final errors mark the goal as paused.
+Goal states: `awaiting clarification → TODOs confirmed → pending → running → awaiting review`; a goal can also become `paused` or `cancelled`, or `done`. A goal becomes done automatically once every TODO is done (each requires verification evidence), whether by the AI or by you, and can be reopened (goals with a design objective or review loop stay awaiting review for your final check); an AI turn ending with unfinished TODOs leaves it awaiting review, and aborted runs and final errors mark it as paused.
 
 Each goal is saved as `<agent dir>/pi-goal/goals/<workspace key>/<uuidv7>.json`, where the agent directory is `~/.pi/agent` by default (or `PI_CODING_AGENT_DIR`) and the workspace key is the SHA-256 hex digest of the project's absolute path; nothing is written inside the project. Each file contains the UUID, the project-local display id, goal text, creation / update times, clarification answers, plan confirmation state, full TODOs (status, completion time and verification note), accumulated execution time (optional `elapsedMs` in milliseconds; while running there is also `runStartedAt` for the current run; older files count as 0), the approval list (optional `approvals`: action descriptions and exact commands; `approvalsConfirmed` records whether they were approved when the plan was confirmed — `false` for imported goals), and a history of goal text / status / TODO changes.
 

@@ -85,12 +85,14 @@ Dialog-only clients such as RPC use select lists: they open on the current sessi
 
 ### Action menu
 
+The most likely action comes first: pause for a running goal, reopen for a done one, mark done once every TODO is done, otherwise run / continue. Then the other frequent actions (run / continue, mark done, TODOs, view definition, edit), and finally sharing and destructive ones (export, save as snippet, cancel, delete).
+
 - **新增目标 / 继续澄清 — new goal / continue clarifying**: the AI asks questions, records answers and confirms a TODO plan; a cancelled clarification can be resumed later.
 - **展开 TODO — TODOs**: each TODO's status (pending, running, blocked or done), completion time and verification note. During execution the AI updates them with `goal_todo`; when idle you can mark a TODO done or reopen it. Marking done requires a verification note; the plugin records the time.
 - **执行 / 继续 — run / continue**: execute the goal with the current model and tools; continuing uses the existing conversation and the latest goal text.
 - **暂停 — pause**: pause the goal; if it is running, the current AI turn is aborted.
 - **修改 — edit**: edit the goal text; a running goal must be paused and the AI stopped first. After editing, the plan must be clarified and confirmed again; the old TODOs remain for reference until a new plan replaces them.
-- **标记完成 / 重新打开 — mark done / reopen**: once all TODOs are done, you confirm the whole goal as done; it can be reopened.
+- **标记完成 / 重新打开 — mark done / reopen**: a goal is marked done automatically when its last TODO is done (by the AI at the end of a run, or by you in the TODO view); goals with a design objective or review loop stay awaiting review for your final check. You can also mark a goal done once all TODOs are done, and reopen it.
 - **取消目标 — cancel goal**: choose "保留已有操作" (keep changes) or "回滚所有操作" (roll back all changes), or go back. The record stays as cancelled; rollback first stops the goal, waits for tool calls to finish, then starts an AI rollback turn.
 - **删除 — delete**: delete the record after confirmation; a running goal is paused first. Deleting only removes the record; to undo changes, use "cancel goal" first.
 
