@@ -63,6 +63,20 @@ prek install
 prek run --all-files
 ```
 
-当前未额外配置 lint、format 工具或 CI。
+当前未额外配置 lint、format 工具；GitHub Actions 只有发版用的 `publish.yml`（见下文）。
+
+## 发版
+
+1. 更新 `package.json` 的 `version` 与 README 中的安装示例版本，运行 `pnpm check`。
+2. 提交并推送 `main`，再推送对应的 `vX.Y.Z` tag。
+3. 为该 tag 发布 GitHub Release（说明分 Changes / Validation / Install 三段）。[publish.yml](../.github/workflows/publish.yml) 会校验 tag 与 `package.json` 版本一致，运行类型检查与测试，然后通过 OIDC 以 provenance 发布到 npm；GitHub 中不保存 npm token。
+
+npm 包所有者的一次性配置（需要 npm 11.19+ 与 2FA）：
+
+```sh
+npm trust github @light4/pi-goal --repo light4/pi-goal --file publish.yml --allow-publish --yes
+```
+
+trusted publishing 只能为已存在的包配置，因此 v0.1.0 由包所有者在本机手动执行 `npm publish --access public` 首发，之后再配置上述信任关系；后续版本均通过 GitHub Release 自动发布。发布失败时修复原因后重新运行失败的 GitHub Actions job；更新使用方之前先确认 GitHub Release 与 npm 版本均已就绪。
 
 [返回 README](../README.md)

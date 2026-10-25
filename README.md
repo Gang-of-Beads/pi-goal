@@ -4,9 +4,13 @@
 
 ## 快速开始
 
+从 npm 安装 v0.1.0：
+
 ```sh
-pi install /absolute/path/to/pi-goal
+pi install npm:@light4/pi-goal@0.1.0
 ```
+
+或从 GitHub 安装同一版本：`pi install git:github.com/light4/pi-goal@v0.1.0`。
 
 在 Pi 中：
 
@@ -34,7 +38,7 @@ pi install /absolute/path/to/pi-goal
 - [Snippets](docs/snippets.md)：跨项目复用的 goal 定义
 - [目标分享](docs/sharing.md)：导入 / 导出 `.goal.sexp` 模板
 - [数据存储](docs/storage.md)：状态、JSON 文件与 workspace 索引
-- [本地开发](docs/development.md)：加载插件与运行检查
+- [本地开发](docs/development.md)：加载插件、运行检查与发版
 
 ## License
 

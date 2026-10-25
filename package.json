@@ -6,6 +6,7 @@
   "type": "module",
   "keywords": ["pi-package", "pi-extension", "goal"],
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/light4/pi-goal.git" },
   "files": ["src", "snippets"],
   "publishConfig": { "access": "public" },
   "pi": { "extensions": ["./src/index.ts"] },
