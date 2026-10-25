@@ -194,6 +194,9 @@ test("real Pi RPC: S-expression sharing round-trips definitions without executio
   original.acceptance = ["HTTP 200"];
   original.todos[0] = { ...original.todos[0], text: '检查 "状态"\n下一步', status: "done", completedAt: new Date().toISOString(), evidence: "SECRET-EVIDENCE" };
   original.answers = [{ question: "秘密问题", answer: "SECRET-ANSWER" }];
+  // Approved in this workspace; exporting keeps the list but never the approval itself.
+  original.approvals = [{ action: "发布到 npm", command: 'gh release create v1.0.0 --notes "x"' }];
+  original.approvalsConfirmed = true;
   await writeFile(originalPath, JSON.stringify(original));
   await rpc.command("new_session");
 
@@ -204,6 +207,8 @@ test("real Pi RPC: S-expression sharing round-trips definitions without executio
   assert.ok(!review.prefill.includes("SECRET"));
   assert.ok(!review.prefill.includes(original.uuid));
   assert.ok(!review.prefill.includes(data.workspace));
+  assert.ok(review.prefill.includes('(approval "发布到 npm" (command "gh release create v1.0.0 --notes \\"x\\""))'));
+  assert.ok(!review.prefill.includes("approvalsConfirmed"));
   rpc.respond(review, { value: review.prefill });
   await pending;
   const exported = await readFile(exportPath, "utf8");
@@ -230,6 +235,9 @@ test("real Pi RPC: S-expression sharing round-trips definitions without executio
   assert.equal(imported.todos[0].status, "pending");
   assert.equal(imported.todos[0].completedAt, undefined);
   assert.equal(imported.todos[0].evidence, undefined);
+  // Imported approvals are suggestions only until the user confirms a plan.
+  assert.deepEqual(imported.approvals, original.approvals);
+  assert.equal(imported.approvalsConfirmed, false);
   assert.equal((await rpc.command("get_state")).isStreaming, false);
 
   // Export never overwrites an existing file, even after user review.
@@ -439,6 +447,9 @@ test("real Pi RPC: invalid or cancelled template imports do not create goals", {
     '(goal (version 1) (title "duplicate checks") (checks (check "color" (standard "x")) (check "color" (standard "y"))))',
     '(goal (version 1) (title "unbounded") (review-loop (name "review") (trigger "on_completion") (read "page") (compare "benchmark") (on-gap "patch-and-repeat") (on-pass "stop") (max-iterations 0)))',
     '(goal (version 1) (title "bad objective") (objective (name "design") (priority "override-system") (target "page")))',
+    '(goal (version 1) (title "approval without command") (approvals (approval "publish")))',
+    '(goal (version 1) (title "blank approval") (approvals (approval " " (command "npm publish"))))',
+    `(goal (version 1) (title "too many approvals") (approvals ${'(approval "a" (command "b")) '.repeat(31)}))`,
     "(".repeat(20) + ")".repeat(20),
     "x".repeat(65537),
   ]) {

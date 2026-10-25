@@ -167,11 +167,21 @@ export function statusHeader(goal: Goal, now = Date.now(), paint: Paint = plain,
   ];
 }
 
+/** Approval list with its state: approved at plan confirmation, or only suggested (e.g. imported). */
+export function approvalSummary(goal: Goal, paint: Paint = plain): string[] {
+  if (!goal.approvals?.length) return [];
+  const header = goal.approvalsConfirmed
+    ? paint("success", `审批清单（已在确认计划时批准，${goal.approvals.length} 项）：`)
+    : paint("warning", `审批清单（建议项，未批准；确认计划时一并批准，${goal.approvals.length} 项）：`);
+  return [header, ...goal.approvals.flatMap((item, index) => [`  ${index + 1}. ${oneLine(item.action)}`, `     ${paint("dim", `$ ${oneLine(item.command)}`)}`])];
+}
+
 /** Full status of one goal, including completion times and done/blocked notes. */
 export function statusDetails(goal: Goal, now = Date.now(), paint: Paint = plain): string {
   const lines = statusHeader(goal, now, paint);
   if (!goal.todos?.length) lines.push(goal.planConfirmed ? "暂无 TODO" : "尚未确认 TODO 计划");
   for (const todo of goal.todos ?? []) lines.push(...todoListLines(todo, paint, "  "));
+  lines.push(...approvalSummary(goal, paint));
   return lines.join("\n");
 }
 

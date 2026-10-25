@@ -19,11 +19,31 @@ export interface ReviewLoop {
   maxIterations: number;
 }
 
+/** A high-impact action with its exact command. In templates it is only a suggestion, never an approval. */
+export interface Approval {
+  action: string;
+  command: string;
+}
+export const MAX_APPROVALS = 30;
+const MAX_APPROVAL_LENGTH = 2000;
+
+/** Throws when an approval list is too long or has blank / oversized entries. */
+export function validateApprovals(approvals: readonly Approval[]): Approval[] {
+  if (approvals.length > MAX_APPROVALS) throw new Error(`At most ${MAX_APPROVALS} approvals are allowed.`);
+  return approvals.map(({ action, command }) => {
+    if (typeof action !== "string" || typeof command !== "string" || !action.trim() || !command.trim()) throw new Error("Each approval needs a nonempty action and command.");
+    if (action.length > MAX_APPROVAL_LENGTH || command.length > MAX_APPROVAL_LENGTH) throw new Error(`Approval text exceeds ${MAX_APPROVAL_LENGTH} characters.`);
+    return { action: action.trim(), command: command.trim() };
+  });
+}
+
 export interface GoalTemplate {
   objective?: DesignObjective;
   benchmarks?: string[];
   checks?: DesignCheck[];
   reviewLoop?: ReviewLoop;
+  /** Suggested high-impact actions; a goal created from a template must have them approved again. */
+  approvals?: Approval[];
   title: string;
   constraints: string[];
   acceptance: string[];
@@ -85,7 +105,7 @@ export function parseGoalTemplate(source: string): GoalTemplate {
   for (const field of root.slice(1)) {
     if (!Array.isArray(field)) throw new Error("Expected a goal field list.");
     const name = symbol(field[0]);
-    if (!name || !["version", "title", "constraints", "acceptance", "todos", "objective", "benchmarks", "checks", "review-loop"].includes(name)) throw new Error(`Unknown goal field: ${name ?? "invalid"}.`);
+    if (!name || !["version", "title", "constraints", "acceptance", "todos", "objective", "benchmarks", "checks", "review-loop", "approvals"].includes(name)) throw new Error(`Unknown goal field: ${name ?? "invalid"}.`);
     if (fields.has(name)) throw new Error(`Duplicate goal field: ${name}.`);
     fields.set(name, field.slice(1));
   }
@@ -147,6 +167,14 @@ export function parseGoalTemplate(source: string): GoalTemplate {
       onGap: "patch-and-repeat", onPass: "stop", maxIterations: count,
     };
   }
+  if (fields.has("approvals")) {
+    template.approvals = validateApprovals((fields.get("approvals") ?? []).map((item) => {
+      if (!Array.isArray(item) || item.length !== 3 || symbol(item[0]) !== "approval" || typeof item[1] !== "string") throw new Error('Expected (approval "action" (command "exact command")).');
+      const command = item[2];
+      if (!Array.isArray(command) || command.length !== 2 || symbol(command[0]) !== "command" || typeof command[1] !== "string") throw new Error("An approval requires exactly one command.");
+      return { action: item[1], command: command[1] };
+    }));
+  }
   return template;
 }
 
@@ -166,6 +194,7 @@ export function serializeGoalTemplate(template: GoalTemplate): string {
     const review = template.reviewLoop;
     lines.push("  (review-loop", `    (name ${quote(review.name)})`, `    (trigger ${quote(review.trigger)})`, `    (read ${quote(review.read)})`, `    (compare ${quote(review.compare)})`, `    (on-gap ${quote(review.onGap)})`, `    (on-pass ${quote(review.onPass)})`, `    (max-iterations ${review.maxIterations})`, "  )");
   }
+  if (template.approvals?.length) lines.push("  (approvals", ...template.approvals.map((item) => `    (approval ${quote(item.action)} (command ${quote(item.command)}))`), "  )");
   lines.push("  (todos", ...template.todos.map((text) => `    (todo ${quote(text)})`), "  )", ")");
   const content = `${lines.join("\n")}\n`;
   parseGoalTemplate(content);

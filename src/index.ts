@@ -3,11 +3,11 @@ import { resolve } from "node:path";
 import { Type } from "typebox";
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { GoalStorage, knownWorkspaces, registerWorkspace } from "./storage.ts";
-import { parseGoalTemplate, readGoalTemplate, serializeGoalTemplate, writeGoalTemplate, type GoalTemplate } from "./sexp.ts";
+import { parseGoalTemplate, readGoalTemplate, serializeGoalTemplate, validateApprovals, writeGoalTemplate, type Approval, type GoalTemplate } from "./sexp.ts";
 import { listSnippets, saveSnippet, validateSnippetName, type GoalSnippet } from "./snippets.ts";
 import { chooseMany, chooseOne, chooseYesNo } from "./choice.ts";
 import { showGoalPicker, showTodoList, type PickerView } from "./picker.ts";
-import { goalListLabel, goalStatusText, sortGoals, statusCounts, statusHeader, LABELS, plain, runningWidget, statusBarText, statusDetails, statusSummary, TODO_LABELS, todoLine, todoListLines, todoNote, trackElapsed, type Paint } from "./status.ts";
+import { approvalSummary, goalListLabel, goalStatusText, sortGoals, statusCounts, statusHeader, LABELS, plain, runningWidget, statusBarText, statusDetails, statusSummary, TODO_LABELS, todoLine, todoListLines, todoNote, trackElapsed, type Paint } from "./status.ts";
 
 /** Unfinished goals listed in the idle summary widget; the rest fold into one count line. */
 const SUMMARY_LIMIT = 3;
@@ -48,6 +48,10 @@ export interface Goal {
   elapsedMs?: number;
   /** Start of the current run while the goal is running. */
   runStartedAt?: string;
+  /** High-impact actions with exact commands, listed for one-time approval at plan confirmation. */
+  approvals?: Approval[];
+  /** True only after the user confirmed the plan with these approvals; templates never set it. */
+  approvalsConfirmed?: boolean;
 }
 interface GoalState {
   goals: Goal[];
@@ -88,6 +92,8 @@ export function restoreGoals(entries: readonly SessionEntry[]): GoalState {
       [goal.createdAt, goal.updatedAt].every((time) => time === undefined || (typeof time === "string" && Number.isFinite(Date.parse(time)))) &&
       (goal.history === undefined || Array.isArray(goal.history)) &&
       (goal.elapsedMs === undefined || (typeof goal.elapsedMs === "number" && Number.isFinite(goal.elapsedMs) && goal.elapsedMs >= 0)) &&
+      (goal.approvalsConfirmed === undefined || typeof goal.approvalsConfirmed === "boolean") &&
+      (goal.approvals === undefined || (Array.isArray(goal.approvals) && (() => { try { validateApprovals(goal.approvals); return true; } catch { return false; } })())) &&
       (goal.runStartedAt === undefined || (typeof goal.runStartedAt === "string" && Number.isFinite(Date.parse(goal.runStartedAt)))))) continue;
     try { for (const goal of data.goals) serializeGoalTemplate(templateFromGoal(goal)); }
     catch { continue; }
@@ -135,8 +141,30 @@ function templateFromGoal(goal: Goal): GoalTemplate {
   return {
     title: goal.text, constraints: goal.constraints ?? [], acceptance: goal.acceptance ?? [], todos: (goal.todos ?? []).map((todo) => todo.text),
     objective: goal.objective, benchmarks: goal.benchmarks, checks: goal.checks, reviewLoop: goal.reviewLoop,
+    approvals: goal.approvals?.length ? goal.approvals : undefined,
   };
 }
+
+/** Approval list as shown to the user and the model: "1. action" then the exact command. */
+function approvalLines(approvals: readonly Approval[]): string[] {
+  return approvals.flatMap((item, index) => [`${index + 1}. ${item.action}`, `   $ ${item.command}`]);
+}
+
+function approvalInstructions(goal: Goal): string {
+  if (!goal.approvals?.length) return "No high-impact actions were pre-approved for this goal; any destructive, external, production or otherwise high-impact action still requires my explicit approval first.";
+  if (!goal.approvalsConfirmed) return ["Suggested approvals (NOT approved; they came from a template or the plan changed). Ask me before running any of them:", ...approvalLines(goal.approvals)].join("\n");
+  return [
+    "Pre-approved actions: I approved these exact commands when confirming the plan. Run them when their TODO is reached without asking again:",
+    ...approvalLines(goal.approvals),
+    "Approval covers only these commands for this goal's confirmed scope. If a command must change materially, the scope changes, or another high-impact action is needed, ask me first. Steps that need my own credentials (e.g. 2FA/OTP) remain mine to perform. Existing approval rules (e.g. Terraform apply) still apply.",
+  ].join("\n");
+}
+
+/** How to keep interruptions few: shared by the start prompt and continuation turns. */
+const BLOCKER_GUIDANCE = [
+  "Minimise interruptions. When a TODO is blocked on me, first complete every TODO that does not depend on it and prepare whatever can be prepared (drafts, commits, notes, commands), then ask all pending questions in a single message.",
+  "When continuing, first check what has changed (files, remote state, my latest reply) and do not repeat a question that has no new information; proceed with whatever my reply unblocked.",
+].join("\n");
 
 function reviewInstructions(goal: Goal): string {
   if (!goal.objective && !goal.checks?.length && !goal.reviewLoop) return "";
@@ -167,6 +195,15 @@ export default function goalExtension(pi: ExtensionAPI) {
   let planningId: number | undefined;
   /** Goal confirmed with "run now"; started once the planning run settles. */
   let autoStartId: number | undefined;
+  /**
+   * Goal whose run ended with unfinished TODOs (usually waiting on my reply). My next ordinary message
+   * continues it, once; a run that does not work on the goal does not re-arm this.
+   */
+  let resumableId: number | undefined;
+  /** Goal continued by the current turn; its context is injected before the agent starts. */
+  let continuingId: number | undefined;
+  /** Whether the active run started from start() or updated a TODO, i.e. actually worked on the goal. */
+  let runWorked = false;
   let runFailed = false;
   let generation = 0;
   let panelOpen = false;
@@ -188,11 +225,19 @@ export default function goalExtension(pi: ExtensionAPI) {
     return ctx.mode === "tui" ? (color, text) => ctx.ui.theme.fg(color, text) : plain;
   }
 
+  /** The goal my next message would continue, if it is still waiting for review with unfinished TODOs. */
+  function resumableGoal(): Goal | undefined {
+    const goal = state.goals.find((item) => item.id === resumableId);
+    return goal && goal.status === "review" && goal.planConfirmed && goal.todos?.some((todo) => todo.status !== "done") ? goal : undefined;
+  }
+
   function refresh(ctx: ExtensionContext) {
     if (!ctx.hasUI) return;
     const paint = paintFor(ctx);
     const running = state.goals.find((goal) => goal.status === "running" && goal.id === activeId);
-    ctx.ui.setStatus("pi-goal", running ? statusBarText(running, undefined, paint) : undefined);
+    const resumable = running ? undefined : resumableGoal();
+    ctx.ui.setStatus("pi-goal", running ? statusBarText(running, undefined, paint)
+      : resumable ? paint("warning", `↩ 下条消息将续接目标 #${resumable.id} · /goal 暂停可取消`) : undefined);
     if (running) {
       // Elapsed time is shown in minutes, so a once-a-minute repaint keeps it current.
       tickerCtx = ctx;
@@ -244,6 +289,8 @@ export default function goalExtension(pi: ExtensionAPI) {
     activeId = undefined;
     planningId = undefined;
     autoStartId = undefined;
+    resumableId = undefined;
+    continuingId = undefined;
     runFailed = false;
     storage = new GoalStorage(ctx.cwd);
     storageError = undefined;
@@ -309,12 +356,14 @@ export default function goalExtension(pi: ExtensionAPI) {
     }
     const previousStatus = goal.status;
     planningId = undefined;
+    resumableId = undefined;
     goal.status = "running";
     activeId = goal.id;
     runFailed = false;
+    runWorked = true;
     save(ctx);
     try {
-      const prompt = `${buildGoalPrompt(goal.text)}\n\n${reviewInstructions(goal)}\n\nGoal ID: ${goal.id}\nConfirmed TODOs:\n${goal.todos.map(todoLabel).join("\n")}\nClarifications:\n${JSON.stringify(goal.answers ?? [])}\nConstraints: ${JSON.stringify(goal.constraints ?? [])}\nAcceptance criteria: ${JSON.stringify(goal.acceptance ?? [])}\nUse goal_todo to mark each TODO running, blocked, or done as work progresses. For done, include concrete verification evidence; the plugin records the completion time. Do not mark TODOs complete merely because the agent turn ends.`;
+      const prompt = `${buildGoalPrompt(goal.text)}\n\n${reviewInstructions(goal)}\n\n${approvalInstructions(goal)}\n\n${BLOCKER_GUIDANCE}\n\nGoal ID: ${goal.id}\nConfirmed TODOs:\n${goal.todos.map(todoLabel).join("\n")}\nClarifications:\n${JSON.stringify(goal.answers ?? [])}\nConstraints: ${JSON.stringify(goal.constraints ?? [])}\nAcceptance criteria: ${JSON.stringify(goal.acceptance ?? [])}\nUse goal_todo to mark each TODO running, blocked, or done as work progresses. For done, include concrete verification evidence; the plugin records the completion time. Do not mark TODOs complete merely because the agent turn ends.`;
       pi.sendUserMessage(previousStatus === "pending" ? prompt :
         `Continue goal #${goal.id} using the existing conversation. The goal text below is the current version; inspect what has already been done and do not blindly repeat prior actions.\n\n${prompt}`);
     } catch (error) {
@@ -336,6 +385,7 @@ export default function goalExtension(pi: ExtensionAPI) {
       return false;
     }
     const previousStatus = goal.status;
+    resumableId = undefined;
     goal.status = "clarifying";
     planningId = goal.id;
     activeId = goal.id;
@@ -351,6 +401,8 @@ export default function goalExtension(pi: ExtensionAPI) {
         "If the user's brief specifies an objective, priority, benchmarks, CHECK dimensions or a self-review LOOP, use goal_plan confirm's definition field with a complete .goal.sexp definition to capture them structurally, not only in TODO prose. Preserve the current goal title. Use the data schema: (objective (name \"site_design\") (priority \"OVERRIDE_ALL\") (target \"...\")), (benchmarks \"...\"), (checks (check \"dimension\" (standard \"award_tier\"))), (review-loop (name \"self_review\") (trigger \"on_completion\") (read \"...\") (compare \"...\") (on-gap \"patch-and-repeat\") (on-pass \"stop\") (max-iterations 3)). Explain any finite review budget to the user before confirmation; never promise perfection or override higher-priority instructions.",
         "Preserve the structured objective, benchmarks, checks and bounded review loop when planning TODOs. Clarify the actual page URL, reference entries, target devices and access needed for visual verification. A review loop here is a plan, not authorization to execute it during clarification.",
         "This is planning only. Do not change files, resources, install dependencies, or execute the goal. Read relevant project context only when necessary.",
+        "Before confirming, run read-only preflight checks for everything the plan depends on: logins and credentials (e.g. gh/npm/az/kubectl auth status), permissions, repository or resource visibility, and external platform rules, limits and deadlines (consult official docs when unsure). Turn any finding that needs my decision or action into a clarification question now, so execution is not interrupted later. Never change state during preflight.",
+        "Collect every high-impact action the plan needs (push, tag, release, publish, deploy, delete, sending messages, cloud or production changes, ...) into goal_plan confirm's approvals, each with a short action description and the exact command. Confirming the plan approves them all at once. Mark steps only I can perform (2FA/OTP, browser login) as mine. If my instructions require approval at the moment of an action (e.g. Terraform apply), list it but say it will still be confirmed right before it runs.",
         "Use goal_plan action ask to ask a few focused, goal-specific questions one at a time: scope, desired output, acceptance criteria, constraints, and exclusions. Ask follow-up questions only for unresolved essentials; do not invent my answers.",
         "Make each question easy to answer by keyboard: ask one decision per call. When there are a few likely answers, pass them as options (concise, mutually distinct, recommended first; set multiple=true when several can apply). For a yes/no decision use kind \"confirm\" without options. The plugin always adds an 'other (custom input)' choice, so do not add one yourself. Use plain free-text questions only when answers cannot be enumerated.",
         "After clarification, use goal_plan action confirm with a concrete ordered TODO list including acceptance/verification steps, plus constraints and acceptance arrays reflecting my confirmed answers. The plugin will let me review/edit and choose to start execution now or later. Never execute the plan yourself in this turn, even after confirmation; if I choose to run now, the plugin starts execution in a new turn. If a dialog is cancelled, stop planning until I ask to continue. Preserve existing instructions and approval boundaries.",
@@ -381,6 +433,10 @@ export default function goalExtension(pi: ExtensionAPI) {
       constraints: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
       acceptance: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
       definition: Type.Optional(Type.String({ description: "Optional full data-only .goal.sexp definition, preserving the current title and any structured objective, benchmarks, checks and bounded review loop requested by the user." })),
+      approvals: Type.Optional(Type.Array(Type.Object({
+        action: Type.String({ minLength: 1, description: "What the action does and why, e.g. 'Publish v0.1.3 to npm via GitHub Release'." }),
+        command: Type.String({ minLength: 1, description: "The exact command to run." }),
+      }), { description: "confirm only: every high-impact action (push, release, publish, deploy, delete, external messages, ...) the plan needs, with exact commands. Confirming the plan approves them all at once." })),
     }),
     async execute(_id, params, signal, _onUpdate, ctx) {
       const goal = state.goals.find((item) => item.id === params.goalId);
@@ -412,11 +468,15 @@ export default function goalExtension(pi: ExtensionAPI) {
       const constraints = params.constraints?.map((text) => text.trim()) ?? definition.constraints;
       const acceptance = params.acceptance?.map((text) => text.trim()) ?? definition.acceptance;
       if ([...constraints, ...acceptance].some((text) => !text)) throw new Error("Constraints and acceptance criteria must not be blank.");
+      const approvals = validateApprovals(params.approvals ?? definition.approvals ?? []);
+      const approvalText = approvals.length
+        ? ["审批清单（确认计划即一并批准以下操作，执行中不再逐一询问；清单外或范围变化仍会询问）：", ...approvalLines(approvals)].join("\n")
+        : "审批清单：无。执行中如需高影响操作仍会单独询问。";
       let texts = params.todos.map((text) => text.trim());
       let choice: string | undefined;
       // One keyboard step: the first option (run now) is the default cursor position.
       for (;;) {
-        choice = await ctx.ui.select(`确认目标 #${goal.id} 的 ${texts.length} 项 TODO？\n\n${serializeGoalTemplate({ ...definition, constraints, acceptance, todos: texts })}`, [RUN_NOW, RUN_LATER, EDIT_TODOS, CANCEL_PLAN]);
+        choice = await ctx.ui.select(`确认目标 #${goal.id} 的 ${texts.length} 项 TODO？\n\n${approvalText}\n\n${serializeGoalTemplate({ ...definition, approvals: undefined, constraints, acceptance, todos: texts })}`, [RUN_NOW, RUN_LATER, EDIT_TODOS, CANCEL_PLAN]);
         if (!valid() || !choice || choice === CANCEL_PLAN) return stopped();
         if (choice !== EDIT_TODOS) break;
         const edited = await ctx.ui.editor(`目标 #${goal.id} · 编辑 TODO（每行一项）`, texts.join("\n"));
@@ -432,6 +492,9 @@ export default function goalExtension(pi: ExtensionAPI) {
       goal.benchmarks = definition.benchmarks;
       goal.checks = definition.checks;
       goal.reviewLoop = definition.reviewLoop;
+      // Confirming the plan is the user's one-time approval of the listed actions.
+      goal.approvals = approvals.length ? approvals : undefined;
+      goal.approvalsConfirmed = approvals.length > 0;
       goal.planConfirmed = true;
       goal.status = "pending";
       planningId = undefined;
@@ -461,6 +524,7 @@ export default function goalExtension(pi: ExtensionAPI) {
       const todo = goal.todos?.find((item) => item.id === params.todoId);
       if (!todo) throw new Error("TODO not found.");
       if (params.status === "done" && !params.evidence?.trim()) throw new Error("Verification evidence is required to complete a TODO.");
+      runWorked = true;
       todo.completedAt = params.status === "done" ? (todo.status === "done" ? todo.completedAt ?? new Date().toISOString() : new Date().toISOString()) : undefined;
       todo.status = params.status;
       todo.evidence = params.evidence?.trim() || undefined;
@@ -470,6 +534,7 @@ export default function goalExtension(pi: ExtensionAPI) {
   });
 
   function pause(goal: Goal, ctx: ExtensionContext) {
+    if (resumableId === goal.id) resumableId = undefined;
     goal.status = "paused";
     if (planningId === goal.id) planningId = undefined;
     for (const todo of goal.todos ?? []) if (todo.status === "running") todo.status = "pending";
@@ -497,10 +562,50 @@ export default function goalExtension(pi: ExtensionAPI) {
       else start(goal, ctx);
       return;
     }
+    if (continuingId === goal.id) continuingId = undefined;
     if (goal.status !== "running") return;
     for (const todo of goal.todos ?? []) if (todo.status === "running") todo.status = "pending";
     goal.status = event.aborted || runFailed ? "paused" : "review";
+    // Unfinished work after a run that worked on the goal: my next message continues it (once).
+    resumableId = goal.status === "review" && runWorked && goal.todos?.some((todo) => todo.status !== "done") ? goal.id : undefined;
+    runWorked = false;
     save(ctx);
+  });
+
+  /**
+   * Continue the resumable goal with my next ordinary message (not a command or shell escape), so a
+   * reply to a blocking question resumes execution and goal_todo works without another /goal step.
+   */
+  pi.on("input", (event, ctx) => {
+    if (event.source === "extension" || event.streamingBehavior || /^[/!]/.test(event.text.trim())) return;
+    const goal = resumableGoal();
+    resumableId = undefined;
+    if (!goal || activeId !== undefined || !ctx.isIdle()) { if (!goal) refresh(ctx); return; }
+    goal.status = "running";
+    activeId = goal.id;
+    continuingId = goal.id;
+    runFailed = false;
+    runWorked = false;
+    save(ctx);
+  });
+
+  pi.on("before_agent_start", () => {
+    const goal = state.goals.find((item) => item.id === continuingId && item.status === "running");
+    if (!goal) return;
+    return {
+      message: {
+        customType: "pi-goal-continue",
+        display: false,
+        content: [
+          `[pi-goal] This turn continues goal #${goal.id}, which ended its previous run with unfinished TODOs. If my message answers or unblocks it, continue the goal and use goal_todo; if it is unrelated, handle my message and leave the goal's TODOs unchanged.`,
+          `Goal: ${goal.text}`,
+          `TODOs:\n${(goal.todos ?? []).map(todoLabel).join("\n")}`,
+          approvalInstructions(goal),
+          BLOCKER_GUIDANCE,
+        ].join("\n\n"),
+        details: { goalId: goal.id },
+      },
+    };
   });
   pi.on("session_shutdown", (_event, ctx) => {
     const goal = state.goals.find((item) => item.id === activeId);
@@ -510,6 +615,8 @@ export default function goalExtension(pi: ExtensionAPI) {
     }
     activeId = undefined;
     autoStartId = undefined;
+    resumableId = undefined;
+    continuingId = undefined;
     stopTicker();
     generation++;
   });
@@ -641,6 +748,8 @@ export default function goalExtension(pi: ExtensionAPI) {
       id: allocateId(ctx), uuid: uuidv7(), workspace: resolve(ctx.cwd), sessionId: ctx.sessionManager.getSessionId(),
       createdAt: now, updatedAt: now, text: template.title, constraints: template.constraints, acceptance: template.acceptance,
       objective: template.objective, benchmarks: template.benchmarks, checks: template.checks, reviewLoop: template.reviewLoop,
+      // Imported approvals are suggestions only; the user approves them when confirming a plan.
+      approvals: template.approvals, approvalsConfirmed: false,
       todos: template.todos.map((text, index) => ({ id: index + 1, text, status: "pending" })), answers: [],
       status: template.todos.length ? "pending" : "clarifying", planConfirmed: template.todos.length > 0,
     };
@@ -724,6 +833,7 @@ export default function goalExtension(pi: ExtensionAPI) {
     return [
       `${goalStatusText(goal, paint)} · #${goal.id} ${goal.text.replace(/\s+/g, " ")}`, `Workspace: ${goal.workspace}`, `Session: ${goal.sessionId ?? "未知"}`, `UUID: ${goal.uuid}`,
       ...(goal.todos ?? []).flatMap((todo) => todoListLines(todo, paint, "  ")),
+      ...approvalSummary(goal, paint),
       "", serializeGoalTemplate(templateFromGoal(goal)),
     ].join("\n");
   }
@@ -751,7 +861,7 @@ export default function goalExtension(pi: ExtensionAPI) {
   async function runAction(goal: Goal, action: string, ctx: ExtensionCommandContext, isCurrent: () => boolean): Promise<"exit" | "back" | "done"> {
     // A run may have settled while a dialog was open; operations check live state.
     if (action === "查看目标定义") {
-      await ctx.ui.select(serializeGoalTemplate(templateFromGoal(goal)), ["返回列表"]);
+      await ctx.ui.select([...approvalSummary(goal, paintFor(ctx)), serializeGoalTemplate(templateFromGoal(goal))].join("\n"), ["返回列表"]);
     } else if (action === "展开 TODO") {
       await todoPanel(goal, ctx, isCurrent);
     } else if (action === "执行 / 继续" || action === "继续澄清") {
@@ -782,6 +892,8 @@ export default function goalExtension(pi: ExtensionAPI) {
         }
         goal.text = text.trim();
         goal.planConfirmed = false;
+        // A changed goal needs its approvals confirmed again with the new plan.
+        goal.approvalsConfirmed = false;
         goal.status = "clarifying";
         save(ctx);
       }
