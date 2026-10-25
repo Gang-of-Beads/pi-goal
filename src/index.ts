@@ -7,7 +7,7 @@ import { parseGoalTemplate, readGoalTemplate, serializeGoalTemplate, writeGoalTe
 import { listSnippets, saveSnippet, validateSnippetName, type GoalSnippet } from "./snippets.ts";
 import { chooseMany, chooseOne, chooseYesNo } from "./choice.ts";
 import { showGoalPicker, showTodoList, type PickerView } from "./picker.ts";
-import { goalListLabel, goalStatusText, sortGoals, statusCounts, LABELS, plain, runningWidget, statusBarText, statusDetails, statusSummary, TODO_LABELS, todoLine, todoListLines, todoNote, trackElapsed, type Paint } from "./status.ts";
+import { goalListLabel, goalStatusText, sortGoals, statusCounts, statusHeader, LABELS, plain, runningWidget, statusBarText, statusDetails, statusSummary, TODO_LABELS, todoLine, todoListLines, todoNote, trackElapsed, type Paint } from "./status.ts";
 
 /** Unfinished goals listed in the idle summary widget; the rest fold into one count line. */
 const SUMMARY_LIMIT = 3;
@@ -555,10 +555,12 @@ export default function goalExtension(pi: ExtensionAPI) {
     let index = 0;
     while (isCurrent()) {
       const todos = goal.todos ?? [];
-      const title = `目标 #${goal.id} · TODO ${todos.filter((todo) => todo.status === "done").length}/${todos.length}`;
+      // Status header (formerly the separate "s" view) above the TODO list.
+      const header = statusHeader(goal, undefined, paint);
+      const title = header.join("\n");
       let todo: GoalTodo | undefined;
       if (ctx.mode === "tui") {
-        const picked = await showTodoList(ctx, title, todos, index);
+        const picked = await showTodoList(ctx, header, todos, index);
         if (!isCurrent() || picked === undefined) return;
         index = picked;
         todo = todos[picked];
@@ -829,10 +831,6 @@ export default function goalExtension(pi: ExtensionAPI) {
   /** Panel shortcut on a goal of the current workspace; mirrors the action menu's availability. */
   async function shortcut(goal: Goal, key: string, ctx: ExtensionCommandContext, isCurrent: () => boolean): Promise<"exit" | "back" | "done"> {
     const active = goal.status === "running" || activeId === goal.id;
-    if (key === "s") {
-      await ctx.ui.select(statusDetails(goal, undefined, paintFor(ctx)), ["返回面板"]);
-      return "done";
-    }
     if (key === "r" && active) {
       ctx.ui.notify(`目标 #${goal.id} 正在执行；按 p 暂停。`, "info");
       return "done";
@@ -863,7 +861,7 @@ export default function goalExtension(pi: ExtensionAPI) {
       if (!state.goals.includes(goal)) {
         // Goals of other workspaces are read-only here.
         if (result.type === "open") await ctx.ui.select(goalDetails(goal, paintFor(ctx)), ["返回面板"]);
-        else if (result.key === "s") await ctx.ui.select(statusDetails(goal, undefined, paintFor(ctx)), ["返回面板"]);
+        else if (result.key === "t") await showTodoList(ctx, statusHeader(goal, undefined, paintFor(ctx)), goal.todos ?? [], 0, true);
         else ctx.ui.notify(`此目标属于 ${goal.workspace}，只读；请在对应 workspace 中执行或修改。`, "info");
         continue;
       }

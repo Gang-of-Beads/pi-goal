@@ -158,13 +158,18 @@ export function runningWidget(goal: Goal, now = Date.now(), paint: Paint = plain
   ];
 }
 
-/** Full status of one goal, including completion times and done/blocked notes. */
-export function statusDetails(goal: Goal, now = Date.now(), paint: Paint = plain): string {
+/** Two-line status header: status word and title, then progress, time and the TODO in focus. */
+export function statusHeader(goal: Goal, now = Date.now(), paint: Paint = plain, maxText = Infinity): string[] {
   const focus = focusTodo(goal);
-  const lines = [
-    `${goalStatusText(goal, paint)} · #${goal.id} ${oneLine(goal.text)}`,
+  return [
+    `${goalStatusText(goal, paint)} · #${goal.id} ${clip(oneLine(goal.text), maxText)}`,
     `进度：${progress(goal)} · 累计执行 ${formatDuration(elapsedMs(goal, now))}${focus ? ` · ${focus.status === "running" ? "正在执行" : "下一项"}：TODO #${focus.id}` : ""}`,
   ];
+}
+
+/** Full status of one goal, including completion times and done/blocked notes. */
+export function statusDetails(goal: Goal, now = Date.now(), paint: Paint = plain): string {
+  const lines = statusHeader(goal, now, paint);
   if (!goal.todos?.length) lines.push(goal.planConfirmed ? "暂无 TODO" : "尚未确认 TODO 计划");
   for (const todo of goal.todos ?? []) lines.push(...todoListLines(todo, paint, "  "));
   return lines.join("\n");

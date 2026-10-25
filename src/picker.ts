@@ -10,7 +10,7 @@ export interface PickerView { scope: number; query: string; searching: boolean; 
 export type PickerResult = { type: "close" } | { type: "open"; goal: Goal } | { type: "key"; key: string; goal?: Goal };
 
 /** Single-letter shortcuts, active while the search box is not focused. */
-export const SHORTCUTS = ["r", "p", "t", "s", "n", "e", "c", "d"] as const;
+export const SHORTCUTS = ["r", "p", "t", "n", "e", "c", "d"] as const;
 const SCOPE_CYCLE = "session → workspace → global";
 
 function goalKey(goal: Goal): string {
@@ -121,7 +121,7 @@ export function showGoalPicker(ctx: ExtensionContext, groups: readonly PickerGro
         container.addChild(new Text(theme.fg("dim", `图例：${GOAL_LEGEND}`), 1, 0));
         container.addChild(new Text(theme.fg("dim", view.searching
           ? `输入过滤 · ↑↓ 选择 · Enter 操作菜单 · Tab 范围（${SCOPE_CYCLE}） · Esc 清空搜索`
-          : `↑↓ 选择 · Enter 操作菜单 · Tab 范围（${SCOPE_CYCLE}） · / 搜索 · r 执行 · p 暂停 · t TODO · s 状态 · n 新增 · e 修改 · c 取消 · d 删除 · Esc 关闭`), 1, 0));
+          : `↑↓ 选择 · Enter 操作菜单 · Tab 范围（${SCOPE_CYCLE}） · / 搜索 · r 执行 · p 暂停 · t TODO / 状态 · n 新增 · e 修改 · c 取消 · d 删除 · Esc 关闭`), 1, 0));
         container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
         return container.render(width);
       },
@@ -164,8 +164,11 @@ export function showGoalPicker(ctx: ExtensionContext, groups: readonly PickerGro
   });
 }
 
-/** TUI TODO list: symbol and text, with time and note on a grey second line. Resolves the chosen index. */
-export function showTodoList(ctx: ExtensionContext, title: string, todos: readonly GoalTodo[], initial = 0): Promise<number | undefined> {
+/**
+ * TUI TODO list under a status header (status, progress, time, TODO in focus): symbol and text, with
+ * time and note on a grey second line. Resolves the chosen index; read-only lists only browse.
+ */
+export function showTodoList(ctx: ExtensionContext, header: readonly string[], todos: readonly GoalTodo[], initial = 0, readOnly = false): Promise<number | undefined> {
   return ctx.ui.custom<number | undefined>((tui, theme, _keybindings, done) => {
     const paint: Paint = (color, text) => theme.fg(color, text);
     let index = Math.max(0, Math.min(initial, todos.length - 1));
@@ -174,7 +177,9 @@ export function showTodoList(ctx: ExtensionContext, title: string, todos: readon
       render(width: number) {
         container.clear();
         container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
-        container.addChild(new Text(theme.fg("accent", theme.bold(title)), 1, 0));
+        const [headline, ...meta] = header;
+        if (headline) container.addChild(new Text(truncateToWidth(theme.bold(headline), Math.max(10, width - 2), "…"), 1, 0));
+        for (const line of meta) container.addChild(new Text(theme.fg("dim", line), 1, 0));
         if (!todos.length) container.addChild(new Text(theme.fg("warning", "暂无 TODO"), 1, 0));
         // Scroll long lists: keep the selection within a window of at most 10 TODOs.
         const size = 10;
@@ -185,11 +190,14 @@ export function showTodoList(ctx: ExtensionContext, title: string, todos: readon
           const position = start + offset;
           const [first, ...rest] = todoListLines(todo, paint);
           const selected = position === index;
-          container.addChild(new Text(`${selected ? theme.fg("accent", "→ ") : "  "}${selected ? theme.bold(first!) : first}`, 1, 0));
-          for (const line of rest) container.addChild(new Text(`  ${line}`, 1, 0));
+          // One row per TODO and per note keeps the list and its key hint on screen; the full
+          // text is shown in the dialog opened with Enter.
+          const fit = (line: string) => truncateToWidth(line, Math.max(10, width - 2), "…");
+          container.addChild(new Text(fit(`${selected ? theme.fg("accent", "→ ") : "  "}${selected ? theme.bold(first!) : first}`), 1, 0));
+          for (const line of rest) container.addChild(new Text(fit(`  ${line}`), 1, 0));
         });
         if (end < todos.length) container.addChild(new Text(theme.fg("dim", `    … 下方还有 ${todos.length - end} 项`), 1, 0));
-        container.addChild(new Text(theme.fg("dim", "↑↓ 选择 · Enter 标记完成 / 重新打开 · Esc 返回"), 1, 0));
+        container.addChild(new Text(theme.fg("dim", readOnly ? "只读（其他 workspace 的目标） · ↑↓ 浏览 · Esc 返回" : "↑↓ 选择 · Enter 标记完成 / 重新打开 · Esc 返回"), 1, 0));
         container.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
         return container.render(width);
       },
@@ -197,7 +205,7 @@ export function showTodoList(ctx: ExtensionContext, title: string, todos: readon
       handleInput(data: string) {
         if (matchesKey(data, Key.up)) index = Math.max(0, index - 1);
         else if (matchesKey(data, Key.down)) index = Math.min(todos.length - 1, index + 1);
-        else if (matchesKey(data, Key.enter)) { if (todos[index]) { done(index); return; } }
+        else if (matchesKey(data, Key.enter)) { if (!readOnly && todos[index]) { done(index); return; } }
         else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) { done(undefined); return; }
         tui.requestRender();
       },
