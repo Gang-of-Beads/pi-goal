@@ -210,10 +210,12 @@ export default function goalExtension(pi: ExtensionAPI) {
     const open = goals.filter((goal) => goal.status !== "done" && goal.status !== "cancelled");
     const shown = open.slice(0, SUMMARY_LIMIT);
     const hidden = goals.filter((goal) => !shown.includes(goal));
+    // The header already counts every status, so the fold line only says how many are not listed;
+    // with nothing unfinished the header alone says so.
     ctx.ui.setWidget("pi-goal", goals.length ? [
-      `Goals · ${goals.length} 个目标 · ${statusCounts(goals, paint)} · /goal 管理`,
+      `Goals · ${goals.length} 个目标 · ${statusCounts(goals, paint)}${shown.length ? "" : " · 均已结束"} · /goal 管理`,
       ...shown.map((goal) => goalListLabel(goal, paint, 40)),
-      ...(hidden.length ? [paint("dim", `${shown.length ? "… 另有 " : "均已结束："}${hidden.length} 个（${statusCounts(hidden)}），打开 /goal 查看全部`)] : []),
+      ...(shown.length && hidden.length ? [paint("dim", `… 另有 ${hidden.length} 个未列出`)] : []),
     ] : undefined);
   }
 
