@@ -1064,6 +1064,8 @@ export default function goalExtension(pi: ExtensionAPI) {
     "/goal <任务>                   新增目标并交互式澄清 TODO",
     "/goal #<编号>                  直接打开当前 workspace 的某个目标",
     "/goal status [#编号]           查看目标状态（默认：执行中目标或当前 Session 未完成目标）",
+    "/goal run #<编号>              执行 / 继续目标（计划未确认时继续澄清），不打开面板",
+    "/goal pause #<编号>            暂停目标，不打开面板",
     "/goal @                        选择 Snippet 创建目标",
     "/goal @<snippet> [补充信息]    用 Snippet 创建目标",
     "/goal import <文件.goal.sexp>  导入模板",
@@ -1076,6 +1078,26 @@ export default function goalExtension(pi: ExtensionAPI) {
     const goal = state.goals.find((item) => item.id === Number(id));
     if (!goal) ctx.ui.notify(`当前 workspace 没有目标 #${id}。用 /goal 查看列表。`, "warning");
     return goal;
+  }
+
+  /**
+   * Non-interactive run / pause for clients that drive /goal by command (e.g. a web page's buttons).
+   * Applies the same checks as the panel shortcuts r and p, and always reports the outcome as a notice.
+   */
+  function directAction(goal: Goal, action: "run" | "pause", ctx: ExtensionCommandContext) {
+    const active = goal.status === "running" || activeId === goal.id;
+    if (action === "run") {
+      if (active) { ctx.ui.notify(`目标 #${goal.id} 正在执行；可用 /goal pause #${goal.id} 暂停。`, "info"); return; }
+      const clarifying = !goal.planConfirmed || !goal.todos?.length;
+      if (start(goal, ctx)) ctx.ui.notify(clarifying ? `目标 #${goal.id} 开始澄清。` : `目标 #${goal.id} 开始执行。`, "info");
+      return;
+    }
+    if (!active && (goal.status === "done" || goal.status === "paused" || goal.status === "cancelled")) {
+      ctx.ui.notify(`目标 #${goal.id} 未在执行，无需暂停。`, "info");
+      return;
+    }
+    pause(goal, ctx);
+    ctx.ui.notify(`目标 #${goal.id} 已暂停。`, "info");
   }
 
   function statusCommand(id: string | undefined, ctx: ExtensionContext) {
@@ -1127,6 +1149,11 @@ export default function goalExtension(pi: ExtensionAPI) {
       statusCommand(match[1], ctx);
       return;
     }
+    if ((match = /^(run|pause)\s+#(\d+)$/.exec(text))) {
+      const goal = findGoal(match[2]!, ctx);
+      if (goal) directAction(goal, match[1] === "run" ? "run" : "pause", ctx);
+      return;
+    }
     if (/^\d+$/.test(text)) {
       // A bare number is ambiguous (task text vs. goal ID); require the explicit #<id> form.
       ctx.ui.notify(`打开目标请用 /goal #${text}；如需新建目标，请写明任务内容。`, "warning");
@@ -1156,6 +1183,10 @@ export default function goalExtension(pi: ExtensionAPI) {
       const items = [
         { value: "status", label: "status [#编号]", description: "查看目标状态与 TODO 进度" },
         ...(trimmed.startsWith("status ") ? state.goals : []).map((goal) => ({ value: `status #${goal.id}`, label: `status #${goal.id}`, description: goal.text.split("\n")[0] })),
+        { value: "run #", label: "run #<编号>", description: "执行 / 继续目标" },
+        ...(trimmed.startsWith("run ") ? state.goals : []).map((goal) => ({ value: `run #${goal.id}`, label: `run #${goal.id}`, description: goal.text.split("\n")[0] })),
+        { value: "pause #", label: "pause #<编号>", description: "暂停目标" },
+        ...(trimmed.startsWith("pause ") ? state.goals : []).map((goal) => ({ value: `pause #${goal.id}`, label: `pause #${goal.id}`, description: goal.text.split("\n")[0] })),
         { value: "@", label: "@<snippet>", description: "用 Snippet 创建目标" },
         { value: "import ", label: "import <文件.goal.sexp>", description: "导入模板" },
         { value: "export ", label: "export <编号> [文件 | @名称]", description: "导出模板或保存为 Snippet" },
