@@ -58,7 +58,7 @@ TODO 确认是一步选择：
 
 - **当前 Session**：当前 workspace 中，由当前 session 创建的目标。
 - **当前 Workspace**：当前工作目录下全部目标，不限创建 session。
-- **所有 Goal**：汇总本插件登记过的所有 workspace 的目标，并显示所属路径。
+- **所有 Goal**：汇总 agent 目录下所有 workspace 的目标（见[数据存储](storage.zh-CN.md)），并显示所属路径。
 
 三个范围相互包含，不是互斥分类。其他 workspace 的目标只读展示详情及状态；执行或修改需在所属 workspace 中进行。旧文件未记录 session 时只出现在 Workspace / 所有 Goal 中。
 

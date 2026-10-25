@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, mkdir, readFile, writeFile, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -117,9 +118,20 @@ async function fixture(t) {
   return { workspace, agent, start };
 }
 
-async function seed(workspace, sessionId, uuid = "01900000-0000-7000-8000-000000000001") {
-  const directory = join(workspace, ".pi", "goals");
+/** Goals of a workspace live in <agent>/pi-goal/goals/<sha256(workspace)>/, never inside the project. */
+function goalsDir(agent, workspace) {
+  return join(agent, "pi-goal", "goals", createHash("sha256").update(resolve(workspace)).digest("hex"));
+}
+
+/** Goal JSON files of a goals directory (workspace.json describes the directory itself). */
+async function goalFiles(directory) {
+  return (await readdir(directory)).filter((file) => file.endsWith(".json") && file !== "workspace.json");
+}
+
+async function seed(agent, workspace, sessionId, uuid = "01900000-0000-7000-8000-000000000001") {
+  const directory = goalsDir(agent, workspace);
   await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "workspace.json"), `${JSON.stringify({ workspace })}\n`);
   const now = new Date().toISOString();
   const goal = {
     id: 1, uuid, workspace, sessionId, text: "真实 RPC 面板测试目标", status: "pending",
@@ -142,7 +154,7 @@ async function openGoal(rpc, scope = "当前 Workspace") {
 test("real Pi RPC: TODO completion, timestamp, cancellation, restart and deletion", { timeout: 60000 }, async (t) => {
   const fixtureData = await fixture(t);
   const { rpc, state } = await fixtureData.start();
-  const path = await seed(fixtureData.workspace, state.sessionId);
+  const path = await seed(fixtureData.agent, fixtureData.workspace, state.sessionId);
   await rpc.command("new_session");
 
   let { pending } = await openGoal(rpc);
@@ -161,6 +173,8 @@ test("real Pi RPC: TODO completion, timestamp, cancellation, restart and deletio
   assert.equal(completed.todos[0].status, "done");
   assert.ok(Number.isFinite(Date.parse(completed.todos[0].completedAt)));
   assert.equal(completed.todos[0].evidence, "实际 RPC 人工验证通过");
+  assert.deepEqual(JSON.parse(await readFile(join(dirname(path), "workspace.json"), "utf8")), { workspace: fixtureData.workspace });
+  await assert.rejects(readdir(join(fixtureData.workspace, ".pi")), { code: "ENOENT" });
   assert.ok(completed.history.length > 0);
 
   ({ pending } = await openGoal(rpc));
@@ -180,13 +194,13 @@ test("real Pi RPC: TODO completion, timestamp, cancellation, restart and deletio
   restarted.respond(confirm, { confirmed: true });
   await restarted.select("关闭");
   await pending;
-  assert.deepEqual((await readdir(join(fixtureData.workspace, ".pi", "goals"))).filter((file) => file.endsWith(".json")), []);
+  assert.deepEqual((await goalFiles(goalsDir(fixtureData.agent, fixtureData.workspace))), []);
 });
 
 test("real Pi RPC: S-expression sharing round-trips definitions without execution state", { timeout: 60000 }, async (t) => {
   const data = await fixture(t);
   const { rpc, state } = await data.start();
-  const originalPath = await seed(data.workspace, state.sessionId);
+  const originalPath = await seed(data.agent, data.workspace, state.sessionId);
   const original = JSON.parse(await readFile(originalPath, "utf8"));
   original.text = '目标 "引号" (括号)\n第二行 \\ 路径';
   original.status = "done";
@@ -219,10 +233,10 @@ test("real Pi RPC: S-expression sharing round-trips definitions without executio
   assert.match(confirmation.message, /不执行表达式/);
   rpc.respond(confirmation, { confirmed: true });
   await pending;
-  const files = (await readdir(join(data.workspace, ".pi", "goals"))).filter((file) => file.endsWith(".json"));
+  const files = (await goalFiles(goalsDir(data.agent, data.workspace)));
   assert.equal(files.length, 2);
   const importedFile = files.find((file) => file !== `${original.uuid}.json`);
-  const imported = JSON.parse(await readFile(join(data.workspace, ".pi", "goals", importedFile), "utf8"));
+  const imported = JSON.parse(await readFile(join(goalsDir(data.agent, data.workspace), importedFile), "utf8"));
   assert.notEqual(imported.uuid, original.uuid);
   assert.match(imported.uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   assert.equal(imported.text, original.text);
@@ -260,9 +274,9 @@ test("real Pi RPC: design objective, all CHECK dimensions and bounded review sur
   assert.match(confirmation.message, /max-iterations 3/);
   rpc.respond(confirmation, { confirmed: true });
   await pending;
-  const files = await readdir(join(data.workspace, ".pi", "goals"));
+  const files = await goalFiles(goalsDir(data.agent, data.workspace));
   assert.equal(files.length, 1);
-  const path = join(data.workspace, ".pi", "goals", files[0]);
+  const path = join(goalsDir(data.agent, data.workspace), files[0]);
   const goal = JSON.parse(await readFile(path, "utf8"));
   assert.deepEqual(goal.objective, { name: "site_design", priority: "OVERRIDE_ALL", target: "build page to award-tier visual standard" });
   assert.equal(goal.acceptance[0], "no visible improvement remaining across all CHECK dimensions");
@@ -311,8 +325,8 @@ test("real Pi RPC: snippets are reusable across workspaces, user snippets shadow
   assert.match(confirmation.message, /micro_interaction/);
   rpc.respond(confirmation, { confirmed: true });
   await pending;
-  const goalsDirectory = join(data.workspace, ".pi", "goals");
-  let goal = JSON.parse(await readFile(join(goalsDirectory, (await readdir(goalsDirectory))[0]), "utf8"));
+  const goalsDirectory = goalsDir(data.agent, data.workspace);
+  let goal = JSON.parse(await readFile(join(goalsDirectory, (await goalFiles(goalsDirectory))[0]), "utf8"));
   assert.match(goal.text, /^Build page to award-tier visual standard\n\n\u9996\u9875 https:\/\/example.test$/);
   assert.equal(goal.checks.length, 8);
   assert.equal(goal.status, "clarifying");
@@ -351,8 +365,11 @@ test("real Pi RPC: snippets are reusable across workspaces, user snippets shadow
   assert.match(otherConfirmation.message, /max-iterations 5/);
   otherRpc.respond(otherConfirmation, { confirmed: true });
   await pending;
-  const otherGoals = join(other, ".pi", "goals");
-  goal = JSON.parse(await readFile(join(otherGoals, (await readdir(otherGoals))[0]), "utf8"));
+  const otherGoals = goalsDir(data.agent, other);
+  goal = JSON.parse(await readFile(join(otherGoals, (await goalFiles(otherGoals))[0]), "utf8"));
+  // The directory describes its workspace, and nothing is written inside the project.
+  assert.deepEqual(JSON.parse(await readFile(join(otherGoals, "workspace.json"), "utf8")), { workspace: other });
+  await assert.rejects(readdir(join(other, ".pi")), { code: "ENOENT" });
   assert.equal(goal.workspace, other);
   assert.equal(goal.reviewLoop.maxIterations, 5);
   assert.match(goal.text, /\u843d\u5730\u9875$/);
@@ -365,13 +382,13 @@ test("real Pi RPC: snippets are reusable across workspaces, user snippets shadow
   pending = otherRpc.command("prompt", { message: "/goal @site-design" });
   otherRpc.respond(await otherRpc.dialog("confirm"), { confirmed: false });
   await pending;
-  assert.equal((await readdir(otherGoals)).filter((file) => file.endsWith(".json")).length, 1);
+  assert.equal((await goalFiles(otherGoals)).length, 1);
 });
 
 test("real Pi RPC: /goal is the single entry point; auxiliary commands are aliases", { timeout: 60000 }, async (t) => {
   const data = await fixture(t);
   const { rpc, state } = await data.start();
-  const path = await seed(data.workspace, state.sessionId);
+  const path = await seed(data.agent, data.workspace, state.sessionId);
   await rpc.command("new_session");
   const notice = (type) => rpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === type);
 
@@ -398,12 +415,12 @@ test("real Pi RPC: /goal is the single entry point; auxiliary commands are alias
   // Bare numbers are ambiguous: rejected with a hint, never opened or created as a goal.
   await rpc.command("prompt", { message: "/goal 1" });
   assert.match((await notice("warning")).message, /\/goal #1/);
-  assert.deepEqual((await readdir(join(data.workspace, ".pi", "goals"))).filter((file) => file.endsWith(".json")), [path.split("/").pop()]);
+  assert.deepEqual((await goalFiles(goalsDir(data.agent, data.workspace))), [path.split("/").pop()]);
 
   // Text that only resembles a subcommand creates an ordinary goal (no model: saved as draft).
   await rpc.command("prompt", { message: "/goal import the customer data" });
   assert.match((await notice("warning")).message, /\u5f85\u6f84\u6e05/);
-  const goals = await Promise.all((await readdir(join(data.workspace, ".pi", "goals"))).map(async (file) => JSON.parse(await readFile(join(data.workspace, ".pi", "goals", file), "utf8"))));
+  const goals = await Promise.all((await goalFiles(goalsDir(data.agent, data.workspace))).map(async (file) => JSON.parse(await readFile(join(goalsDir(data.agent, data.workspace), file), "utf8"))));
   const created = goals.find((goal) => goal.id === 2);
   assert.equal(created.text, "import the customer data");
   assert.equal(created.status, "clarifying");
@@ -429,7 +446,7 @@ test("real Pi RPC: /goal is the single entry point; auxiliary commands are alias
   pending = rpc.command("prompt", { message: "/goal-snippet alias-snippet" });
   rpc.respond(await rpc.dialog("confirm"), { confirmed: true });
   await pending;
-  assert.equal((await readdir(join(data.workspace, ".pi", "goals"))).filter((file) => file.endsWith(".json")).length, 4);
+  assert.equal((await goalFiles(goalsDir(data.agent, data.workspace))).length, 4);
   assert.equal((await rpc.command("get_state")).isStreaming, false);
 });
 
@@ -463,19 +480,20 @@ test("real Pi RPC: invalid or cancelled template imports do not create goals", {
   const confirmation = await rpc.dialog("confirm");
   rpc.respond(confirmation, { confirmed: false });
   await pending;
-  await assert.rejects(readdir(join(data.workspace, ".pi", "goals")), { code: "ENOENT" });
+  await assert.rejects(readdir(goalsDir(data.agent, data.workspace)), { code: "ENOENT" });
   assert.equal((await rpc.command("get_state")).isStreaming, false);
 });
 
 test("real Pi RPC: Session / Workspace / all scopes include foreign workspace read-only", { timeout: 60000 }, async (t) => {
   const data = await fixture(t);
   const { rpc, state } = await data.start();
-  await seed(data.workspace, state.sessionId);
+  await seed(data.agent, data.workspace, state.sessionId);
   const foreignWorkspace = join(dirname(data.workspace), "foreign");
-  await seed(foreignWorkspace, "foreign-session", "01900000-0000-7000-8000-000000000002");
-  const registry = join(data.agent, "pi-goal", "workspaces");
-  await mkdir(registry, { recursive: true });
-  await writeFile(join(registry, "foreign.json"), JSON.stringify({ workspace: foreignWorkspace }));
+  await seed(data.agent, foreignWorkspace, "foreign-session", "01900000-0000-7000-8000-000000000002");
+  // No backward compatibility: goals left in a project's .pi/goals are ignored.
+  const legacy = join(data.workspace, ".pi", "goals");
+  await mkdir(legacy, { recursive: true });
+  await writeFile(join(legacy, "01900000-0000-7000-8000-000000000003.json"), JSON.stringify({ id: 7, uuid: "01900000-0000-7000-8000-000000000003", text: "legacy", status: "pending" }));
   await rpc.command("new_session");
   const pending = rpc.command("prompt", { message: "/goal" });
   const session = await rpc.select("切换到：所有 Goal");
@@ -501,7 +519,7 @@ test("real Pi RPC: Session / Workspace / all scopes include foreign workspace re
 test("real Pi RPC: /goal status shows TODO icons, notes and elapsed time; interrupted runs settle on load", { timeout: 60000 }, async (t) => {
   const data = await fixture(t);
   const { rpc, state } = await data.start();
-  const path = await seed(data.workspace, state.sessionId);
+  const path = await seed(data.agent, data.workspace, state.sessionId);
   const goal = JSON.parse(await readFile(path, "utf8"));
   const now = Date.now();
   // A run killed mid-way: still "running" with an open run that last updated 3 minutes after it began.
@@ -534,7 +552,7 @@ test("real Pi RPC: /goal status shows TODO icons, notes and elapsed time; interr
   await rpc.command("prompt", { message: "/goal status" });
   assert.match((await notice()).message, /当前 Session 没有未完成的目标/);
   // "status" is a subcommand, not a new goal.
-  assert.equal((await readdir(join(data.workspace, ".pi", "goals"))).filter((file) => file.endsWith(".json")).length, 1);
+  assert.equal((await goalFiles(goalsDir(data.agent, data.workspace))).length, 1);
   const widget = rpc.records.filter((record) => record.method === "setWidget").at(-1);
   assert.match(widget.widgetLines[0], /Goals · 1 个目标/);
 });

@@ -2,7 +2,7 @@ English | [中文](sharing.zh-CN.md)
 
 # Sharing goal templates
 
-Full execution state stays in `.pi/goals/<uuidv7>.json`; a `.goal.sexp` file holds only the shareable goal definition.
+Full execution state stays in the goal JSON files under the Pi agent directory (see [Storage](storage.md)); a `.goal.sexp` file holds only the shareable goal definition.
 
 ## Export
 

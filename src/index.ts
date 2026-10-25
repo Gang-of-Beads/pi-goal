@@ -2,7 +2,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionCommandContext, type Exte
 import { resolve } from "node:path";
 import { Type } from "typebox";
 import { uuidv7 } from "@earendil-works/pi-ai";
-import { GoalStorage, knownWorkspaces, registerWorkspace } from "./storage.ts";
+import { GoalStorage, knownWorkspaces } from "./storage.ts";
 import { parseGoalTemplate, readGoalTemplate, serializeGoalTemplate, validateApprovals, writeGoalTemplate, type Approval, type GoalTemplate } from "./sexp.ts";
 import { listSnippets, saveSnippet, validateSnippetName, type GoalSnippet } from "./snippets.ts";
 import { chooseMany, chooseOne, chooseYesNo } from "./choice.ts";
@@ -266,7 +266,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 
   function save(ctx: ExtensionContext) {
     if (storageError) throw new Error(storageError);
-    storage ??= new GoalStorage(ctx.cwd);
+    storage ??= new GoalStorage(getAgentDir(), ctx.cwd);
     for (const goal of state.goals) {
       goal.uuid ??= uuidv7();
       goal.createdAt ??= new Date().toISOString();
@@ -292,11 +292,10 @@ export default function goalExtension(pi: ExtensionAPI) {
     resumableId = undefined;
     continuingId = undefined;
     runFailed = false;
-    storage = new GoalStorage(ctx.cwd);
+    storage = new GoalStorage(getAgentDir(), ctx.cwd);
     storageError = undefined;
     persisted = new Map();
     try {
-      registerWorkspace(getAgentDir(), ctx.cwd);
       const loaded = storage.load();
       for (const goal of loaded.goals) goal.workspace ??= resolve(ctx.cwd);
       const validated = validateGoals(loaded.goals);
@@ -320,7 +319,7 @@ export default function goalExtension(pi: ExtensionAPI) {
    */
   function allocateId(ctx: ExtensionContext): number {
     if (storageError) throw new Error(storageError);
-    storage ??= new GoalStorage(ctx.cwd);
+    storage ??= new GoalStorage(getAgentDir(), ctx.cwd);
     const id = Math.max(state.nextId, storage.maxId() + 1);
     state.nextId = id + 1;
     return id;
@@ -714,14 +713,14 @@ export default function goalExtension(pi: ExtensionAPI) {
     try {
       const registry = knownWorkspaces(getAgentDir());
       directories = registry.workspaces;
-      for (const error of registry.errors) ctx.ui.notify(`Workspace 索引无效，已跳过：${error}`, "warning");
+      for (const error of registry.errors) ctx.ui.notify(`目标目录无效，已跳过：${error}`, "warning");
     } catch (error) {
-      ctx.ui.notify(`无法读取 workspace 索引：${String(error)}`, "warning");
+      ctx.ui.notify(`无法读取目标目录：${String(error)}`, "warning");
     }
     for (const directory of directories) {
       if (directory === workspace) continue;
       try {
-        const loaded = new GoalStorage(directory).load();
+        const loaded = new GoalStorage(getAgentDir(), directory).load();
         const validated = validateGoals(loaded.goals);
         const errors = [...loaded.errors, ...validated.errors];
         if (errors.length) ctx.ui.notify(`workspace ${directory} 中有 ${errors.length} 个目标文件无效，已跳过`, "warning");

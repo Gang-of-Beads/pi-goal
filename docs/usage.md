@@ -58,7 +58,7 @@ Without a selected model, or with a model missing credentials, a new goal is sav
 
 - **当前 Session — current session**: goals in the current workspace created by the current session.
 - **当前 Workspace — current workspace**: all goals in the current working directory, regardless of session.
-- **所有 Goal — all goals**: goals from every workspace this plugin has registered, with their paths.
+- **所有 Goal — all goals**: goals from every workspace stored under the agent directory (see [Storage](storage.md)), with their paths.
 
 The scopes overlap rather than partition. Goals from other workspaces are read-only (details and status); run or edit them in their own workspace. Older files without a session only appear under Workspace / All goals.
 

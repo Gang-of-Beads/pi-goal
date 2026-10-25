@@ -25,7 +25,7 @@ Or install the same release from GitHub: `pi install git:github.com/light4/pi-go
 - [Usage](docs/usage.md): clarification, the goal panel, status display, commands and execution boundaries
 - [Snippets](docs/snippets.md): goal definitions reusable across projects
 - [Sharing](docs/sharing.md): import / export `.goal.sexp` templates
-- [Storage](docs/storage.md): states, JSON files and the workspace registry
+- [Storage](docs/storage.md): states, goal files under the Pi agent directory
 - [Development](docs/development.md): local loading, checks and releases
 
 ## License

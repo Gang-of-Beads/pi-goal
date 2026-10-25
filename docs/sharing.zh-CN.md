@@ -2,7 +2,7 @@
 
 # Goal 模板分享
 
-完整执行状态继续保存为 `.pi/goals/<uuidv7>.json`；`.goal.sexp` 只保存可分享的目标定义。
+完整执行状态保存在 Pi agent 目录下的目标 JSON 文件中（见[数据存储](storage.zh-CN.md)）；`.goal.sexp` 只保存可分享的目标定义。
 
 ## 导出
 

@@ -3,32 +3,37 @@ import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import type { Goal } from "./index.ts";
 
-export function registerWorkspace(root: string, cwd: string) {
-  const workspace = resolve(cwd);
-  const directory = join(root, "pi-goal", "workspaces");
-  mkdirSync(directory, { recursive: true });
-  const key = createHash("sha256").update(workspace).digest("hex");
-  const path = join(directory, `${key}.json`);
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify({ workspace })}\n`, { mode: 0o600 });
-  renameSync(temporary, path);
+/** Root of all goal files: <agentDir>/pi-goal/goals, one subdirectory per workspace. */
+export function goalsRoot(agentDir: string): string {
+  return join(agentDir, "pi-goal", "goals");
 }
 
-/** Invalid registry files are reported and skipped so one bad entry cannot hide every workspace. */
-export function knownWorkspaces(root: string): { workspaces: string[]; errors: string[] } {
-  const directory = join(root, "pi-goal", "workspaces");
+/** Directory name for a workspace: SHA-256 of its absolute path. */
+export function workspaceKey(workspace: string): string {
+  return createHash("sha256").update(resolve(workspace)).digest("hex");
+}
+
+const WORKSPACE_FILE = "workspace.json";
+
+/**
+ * Workspaces with stored goals, read from each directory's self-describing workspace.json.
+ * Invalid directories are reported and skipped so one bad entry cannot hide every workspace.
+ */
+export function knownWorkspaces(agentDir: string): { workspaces: string[]; errors: string[] } {
+  const root = goalsRoot(agentDir);
   let names: string[];
-  try { names = readdirSync(directory); } catch (error) {
+  try { names = readdirSync(root); } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { workspaces: [], errors: [] };
     throw error;
   }
   const workspaces: string[] = [];
   const errors: string[] = [];
-  for (const name of names.filter((name) => name.endsWith(".json"))) {
-    const path = join(directory, name);
+  for (const name of names.filter((name) => /^[0-9a-f]{64}$/.test(name)).sort()) {
+    const path = join(root, name, WORKSPACE_FILE);
     try {
       const data = JSON.parse(readFileSync(path, "utf8")) as { workspace?: unknown } | null;
-      if (typeof data?.workspace !== "string") throw new Error("missing workspace path");
+      if (typeof data?.workspace !== "string" || !data.workspace) throw new Error("missing workspace path");
+      if (workspaceKey(data.workspace) !== name) throw new Error("workspace path does not match directory name");
       workspaces.push(resolve(data.workspace));
     } catch (error) {
       errors.push(`${path}: ${String(error)}`);
@@ -44,8 +49,29 @@ export class GoalStorage {
   private originals = new Map<string, string>();
   readonly directory: string;
 
-  constructor(cwd: string) {
-    this.directory = join(cwd, ".pi", "goals");
+  readonly workspace: string;
+
+  /** Goals of `workspace` live in <agentDir>/pi-goal/goals/<sha256(workspace)>/; nothing is written to the project. */
+  constructor(agentDir: string, workspace: string) {
+    this.workspace = resolve(workspace);
+    this.directory = join(goalsRoot(agentDir), workspaceKey(this.workspace));
+  }
+
+  /** Goal files only: the directory also holds workspace.json. */
+  private goalFiles(names: string[]): string[] {
+    return names.filter((name) => name.endsWith(".json") && name !== WORKSPACE_FILE);
+  }
+
+  /** Record which workspace this directory belongs to (atomic, written once or when missing). */
+  private describe() {
+    const path = join(this.directory, WORKSPACE_FILE);
+    const content = `${JSON.stringify({ workspace: this.workspace })}\n`;
+    try { if (readFileSync(path, "utf8") === content) return; } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const temporary = `${path}.${process.pid}.tmp`;
+    writeFileSync(temporary, content, { mode: 0o600 });
+    renameSync(temporary, path);
   }
 
   private path(uuid: string): string {
@@ -66,7 +92,7 @@ export class GoalStorage {
     }
     const goals: Goal[] = [];
     const errors: string[] = [];
-    for (const name of names.filter((name) => name.endsWith(".json")).sort()) {
+    for (const name of this.goalFiles(names).sort()) {
       const uuid = name.slice(0, -5);
       try {
         const content = readFileSync(this.path(uuid), "utf8");
@@ -89,8 +115,7 @@ export class GoalStorage {
       throw error;
     }
     let max = 0;
-    for (const name of names) {
-      if (!name.endsWith(".json")) continue;
+    for (const name of this.goalFiles(names)) {
       try {
         const id = (JSON.parse(readFileSync(join(this.directory, name), "utf8")) as { id?: unknown }).id;
         if (Number.isSafeInteger(id) && (id as number) > max) max = id as number;
@@ -110,7 +135,8 @@ export class GoalStorage {
   write(goal: Goal) {
     if (!goal.uuid) throw new Error("Goal UUID is required.");
     this.checkUnchanged(goal.uuid);
-    mkdirSync(this.directory, { recursive: true });
+    mkdirSync(this.directory, { recursive: true, mode: 0o700 });
+    this.describe();
     const path = this.path(goal.uuid);
     const temporary = `${path}.${process.pid}.tmp`;
     const content = `${JSON.stringify(goal, null, 2)}\n`;

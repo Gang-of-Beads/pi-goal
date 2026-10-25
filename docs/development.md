@@ -39,7 +39,7 @@ Covered today:
 - RPC select-list fallback: current session by default, "切换到：…" scope items, the "＋ 新增目标" submenu, cross-session filtering, and read-only details for other workspaces (the TUI panel must be verified in a real terminal).
 - TODO view, manual completion, and persisted completion time and verification notes.
 - Cancelling with kept changes, and the rollback option.
-- JSON persistence across restarts and deletion of goal files.
+- JSON persistence across restarts and deletion of goal files; goals stored under `<agent dir>/pi-goal/goals/<sha256>/` with `workspace.json`, nothing written inside the project, and legacy `.pi/goals` ignored.
 - S-expression export / import round trips, exclusion of private fields, TODO state reset, no automatic run after confirming, and approvals exported as suggestions and imported unapproved.
 - Invalid syntax, unknown / duplicate fields, versions, complexity / size limits, malformed approvals, cancelled imports and refusing to overwrite existing exports.
 - `/goal` as the single entry point: help, `/goal #<id>` opening a goal and keeping the menu after actions, unknown ids, bare numbers rejected (neither opened nor created), subcommand-like ordinary text still creating goals, invalid snippet names, aliases matching the main command; no AI turn without usable model credentials.
