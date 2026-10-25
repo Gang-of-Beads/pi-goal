@@ -15,6 +15,7 @@ English | [中文](usage.zh-CN.md)
 - `/goal`: open the goal panel, showing the current session's goals by default. Tab switches to Workspace / All goals, `/` searches, and single-letter shortcuts run, pause, show TODOs and more.
 - `/goal status [#id]`: show goal status — which TODOs are done, which one is in progress, blocked notes and accumulated execution time.
 - `/goal @<snippet>`: create a goal from a cross-project [snippet](snippets.md), such as the built-in `site-design`.
+- `/goal run #<id>` / `/goal pause #<id>`: run or pause a goal directly, with the same checks as the panel's `r` / `p` keys and the outcome reported as a notice — useful for clients that drive `/goal` by command, such as a web page's buttons.
 - `/goal help`: show all usage (`#<id>` to open a goal, import / export, save a snippet, ...); the full list is in [Commands](#commands).
 
 Everything goes through `/goal`; `/goal-import`, `/goal-export`, `/goal-snippet` and `/goal-snippet-save` are only aliases.
@@ -144,13 +145,15 @@ Everything goes through `/goal`:
 | `/goal <task>` | Create a goal and clarify its TODOs interactively |
 | `/goal #<id>` | Open that goal's action menu in the current workspace |
 | `/goal status [#<id>]` | Show goal status, TODO progress and accumulated time |
+| `/goal run #<id>` | Run / continue the goal (continues clarification if the plan is not confirmed) without opening the panel |
+| `/goal pause #<id>` | Pause the goal without opening the panel |
 | `/goal @` / `/goal @<snippet> [extra context]` | Create a goal from a [snippet](snippets.md) |
 | `/goal import <file.goal.sexp>` | Import a template, see [Sharing](sharing.md) |
 | `/goal export <id> [file.goal.sexp]` | Export a template |
 | `/goal export <id> @<name>` | Save as a global snippet |
 | `/goal help` | Show usage |
 
-Opening a goal requires `#`: `/goal #1`. A bare number such as `/goal 1` is ambiguous; it suggests `#1` and neither opens nor creates a goal. Text is treated as a subcommand only when it matches the forms above exactly: the `export` id must be numeric, `import` / `export` files must end with `.goal.sexp`, and `@` must be followed by a valid snippet name. Any other text (e.g. `/goal import the customer data`) creates a new goal. After typing `/goal `, subcommands, `#<id>` and snippet names autocomplete.
+Opening a goal requires `#`: `/goal #1`. A bare number such as `/goal 1` is ambiguous; it suggests `#1` and neither opens nor creates a goal. Text is treated as a subcommand only when it matches the forms above exactly: `run` / `pause` need `#<id>`, the `export` id must be numeric, `import` / `export` files must end with `.goal.sexp`, and `@` must be followed by a valid snippet name. Any other text (e.g. `/goal import the customer data`) creates a new goal. After typing `/goal `, subcommands, `#<id>` and snippet names autocomplete.
 
 `/goal-import`, `/goal-export`, `/goal-snippet` and `/goal-snippet-save` are aliases with the same behavior as the corresponding usage above.
 

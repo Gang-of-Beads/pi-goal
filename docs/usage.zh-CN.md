@@ -15,6 +15,7 @@
 - `/goal`：打开目标面板，默认显示当前 Session 的目标；Tab 切换 Workspace / 所有 Goal，`/` 搜索，单字母快捷键执行、暂停、查看 TODO 等。
 - `/goal status [#编号]`：查看目标状态——哪些 TODO 已完成、正在执行哪一项、阻塞说明与累计执行时长。
 - `/goal @<snippet>`：用跨项目复用的 [Snippet](snippets.zh-CN.md) 创建目标，如内置的 `site-design`。
+- `/goal run #<编号>` / `/goal pause #<编号>`：直接执行或暂停目标，检查与面板快捷键 `r` / `p` 相同，结果以通知显示——适合以命令驱动 `/goal` 的客户端，例如网页按钮。
 - `/goal help`：查看全部用法（`#<编号>` 直接打开目标、导入 / 导出、保存 snippet 等），完整列表见[命令](#命令)。
 
 所有功能都通过 `/goal` 完成；`/goal-import`、`/goal-export`、`/goal-snippet`、`/goal-snippet-save` 只是辅助别名。
@@ -144,13 +145,15 @@ TODO：`✓` 已完成（绿）、`▶` 执行中（accent）、`✗` 阻塞（�
 | `/goal <任务>` | 新增目标并交互式澄清 TODO |
 | `/goal #<编号>` | 直接打开当前 workspace 中该目标的操作菜单 |
 | `/goal status [#<编号>]` | 查看目标状态、TODO 进度与累计执行时长 |
+| `/goal run #<编号>` | 执行 / 继续目标（计划未确认时继续澄清），不打开面板 |
+| `/goal pause #<编号>` | 暂停目标，不打开面板 |
 | `/goal @` / `/goal @<snippet> [补充信息]` | 用 [Snippet](snippets.zh-CN.md) 创建目标 |
 | `/goal import <文件.goal.sexp>` | 导入模板，见[目标分享](sharing.zh-CN.md) |
 | `/goal export <编号> [文件.goal.sexp]` | 导出模板 |
 | `/goal export <编号> @<名称>` | 保存为全局 Snippet |
 | `/goal help` | 显示用法 |
 
-打开目标必须写 `#`：`/goal #1`。纯数字 `/goal 1` 有歧义，会提示改用 `#1`，不会打开或新建目标。只有严格匹配上述形式时才视为子命令：`export` 的编号必须是纯数字，`import` / `export` 的文件必须以 `.goal.sexp` 结尾，`@` 后必须是合法的 snippet 名称。其他文字（例如 `/goal import the customer data`）都作为新目标。输入 `/goal ` 后支持自动补全子命令、`#<编号>` 和 snippet 名称。
+打开目标必须写 `#`：`/goal #1`。纯数字 `/goal 1` 有歧义，会提示改用 `#1`，不会打开或新建目标。只有严格匹配上述形式时才视为子命令：`run` / `pause` 必须带 `#<编号>`，`export` 的编号必须是纯数字，`import` / `export` 的文件必须以 `.goal.sexp` 结尾，`@` 后必须是合法的 snippet 名称。其他文字（例如 `/goal import the customer data`）都作为新目标。输入 `/goal ` 后支持自动补全子命令、`#<编号>` 和 snippet 名称。
 
 `/goal-import`、`/goal-export`、`/goal-snippet`、`/goal-snippet-save` 是辅助别名，功能与上表对应用法一致。
 
