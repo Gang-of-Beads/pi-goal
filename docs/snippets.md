@@ -1,47 +1,49 @@
-# Goal Snippets
+English | [中文](snippets.zh-CN.md)
 
-Snippet 是可在所有项目中复用的 goal 定义，格式与 [`.goal.sexp` 模板](sharing.md#格式-v1)相同。例如内置的 `site-design` 可用于任意前端项目。
+# Goal snippets
 
-## 使用
+A snippet is a goal definition reusable across all projects, in the same format as [`.goal.sexp` templates](sharing.md#format-v1). For example, the built-in `site-design` works in any frontend project.
+
+## Use
 
 ```text
 /goal @
-/goal @site-design 首页 https://example.com，保留现有品牌色
+/goal @site-design home page https://example.com, keep the existing brand colors
 ```
 
-- 不带参数时列出所有 snippet，选择后可补充本项目信息（页面、URL、范围等，可留空）。
-- 带名称时直接使用，名称后的文字作为本项目补充信息，追加到目标文本末尾。
-- 使用前展示完整定义并要求确认；取消不创建目标。
-- 确认后在**当前 workspace** 创建新 goal（新 UUIDv7），不会修改 snippet 本身。
-- 没有 TODO 的 snippet 会立即进入交互式澄清（需已选择模型且 AI 空闲，否则保存为待澄清）；包含 TODO 的 snippet 视为已确认计划，**不自动执行**。
+- Without a name, all snippets are listed; after choosing one you can add project details (page, URL, scope, ...; may be empty).
+- With a name, it is used directly; the text after the name is extra project context appended to the goal text.
+- The full definition is shown for confirmation first; cancelling creates nothing.
+- Confirming creates a new goal (new UUIDv7) in the **current workspace**; the snippet itself is never modified.
+- A snippet without TODOs starts interactive clarification immediately (if a model is selected and the AI is idle; otherwise it is saved as awaiting clarification); a snippet with TODOs counts as a confirmed plan and **does not run automatically**.
 
-`/goal` 面板的分区首页也提供“从 Snippet 创建”；输入 `/goal @` 时可自动补全 snippet 名称。别名 `/goal-snippet [名称] [补充信息]` 行为相同。
+In the `/goal` panel you can also press `n` (or "＋ 新增目标" in RPC lists) and choose "从 Snippet 创建" (from snippet); typing `/goal @` autocompletes snippet names. The alias `/goal-snippet [name] [extra context]` behaves the same.
 
-## 保存
+## Save
 
 ```text
 /goal export 1 @landing-review
 ```
 
-或在面板中选中目标，选择“保存为 Snippet”（别名：`/goal-snippet-save <编号> <名称>`）。保存前会打开编辑器审阅内容，请移除项目专属信息（URL、路径、业务细节）和敏感内容；取消则不保存。只保存目标定义，不含执行状态、问答或历史。
+Or select a goal in the panel and choose "保存为 Snippet" (save as snippet) (alias: `/goal-snippet-save <id> <name>`). An editor opens for review before saving; remove project-specific details (URLs, paths, business details) and sensitive content. Cancelling saves nothing. Only the goal definition is saved — no execution state, clarification answers or history.
 
-名称只能包含小写字母、数字和连字符，以字母或数字开头，最多 64 个字符。已存在的同名用户 snippet 不会被覆盖；如需更新，请先手动删除旧文件。
+Names may only contain lowercase letters, digits and hyphens, start with a letter or digit, and be at most 64 characters. An existing user snippet with the same name is never overwritten; delete the old file manually to update it.
 
-## 来源与优先级
+## Sources and precedence
 
-| 来源 | 位置 | 说明 |
+| Source | Location | Notes |
 |---|---|---|
-| 我的 | `~/.pi/agent/pi-goal/snippets/<name>.goal.sexp`（随 `PI_CODING_AGENT_DIR` 变化） | 全局共享，所有 workspace 可用 |
-| 内置 | 插件包内 `snippets/` | 随插件发布，只读 |
+| Mine | `~/.pi/agent/pi-goal/snippets/<name>.goal.sexp` (follows `PI_CODING_AGENT_DIR`) | Global, available in every workspace |
+| Built-in | `snippets/` in the plugin package | Shipped with the plugin, read-only |
 
-同名时“我的” snippet 覆盖内置 snippet，可借此定制内置模板（如把 `site-design` 的复审上限改为 5）。无效文件会提示并跳过，不影响其他 snippet。删除用户 snippet 直接删除对应文件即可。
+On a name clash, your snippet overrides the built-in one, which lets you customize built-in templates (e.g. raise `site-design`'s review limit to 5). Invalid files are reported and skipped without affecting other snippets. To delete a user snippet, delete its file.
 
-## 内置 Snippet
+## Built-in snippets
 
-| 名称 | 用途 |
+| Name | Purpose |
 |---|---|
-| `site-design` | 获奖级页面视觉标准：8 个 CHECK 维度、Awwwards / Webby / FWA 基准、最多 3 轮完成后自审。语义边界见[设计目标与复审规则](sharing.md#设计目标与复审规则) |
+| `site-design` | Award-tier page visual standard: 8 CHECK dimensions, Awwwards / Webby / FWA benchmarks, up to 3 self-review rounds on completion. See [Design objectives and review rules](sharing.md#design-objectives-and-review-rules) for its semantic boundaries |
 
-Snippet 只作为数据解析，不执行代码；确认使用不替代执行时所需的审批。
+Snippets are parsed as data only and never execute code; confirming a snippet does not replace the approvals required during execution.
 
-[返回 README](../README.md)
+[Back to README](../README.md)

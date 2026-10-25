@@ -1,134 +1,166 @@
-# 使用指南
+English | [中文](usage.zh-CN.md)
 
-`/goal <任务>` 先创建目标，由当前 AI 交互式提问，澄清范围、验收标准和约束，再生成 TODO 清单。
+# Usage
 
-澄清提问尽量用键盘完成：
+## Overview
 
-- **单选**：AI 给出候选项时，用 ↑↓ 选择、Enter 确认，无需输入 a/b/c。
-- **多选**：↑↓ 移动、空格勾选、Enter 确认、Escape 取消；未勾选时 Enter 选中当前项。多个答案以“；”拼接保存。RPC 客户端无法显示自定义组件，改为多行文本输入（每行一项）。
-- **是 / 否**：在“是 / 否”中选择，无需输入 yes/no。
-- 每个选项列表末尾都有“其他（自定义输入）”，选中后在编辑器中输入自由文本；无法枚举答案的问题直接使用编辑器。
+```text
+/goal add a health check endpoint and verify it
+/goal
+/goal status
+/goal @site-design home page https://example.com
+```
 
-TODO 确认是一步选择：
+- `/goal <task>`: clarify the goal interactively and confirm its TODOs. Pick options with the arrow keys; confirmation defaults to "confirm and run now", or you can run it later.
+- `/goal`: open the goal panel, showing the current session's goals by default. Tab switches to Workspace / All goals, `/` searches, and single-letter shortcuts run, pause, show TODOs and more.
+- `/goal status [#id]`: show goal status — which TODOs are done, which one is in progress, blocked notes and accumulated execution time.
+- `/goal @<snippet>`: create a goal from a cross-project [snippet](snippets.md), such as the built-in `site-design`.
+- `/goal help`: show all usage (`#<id>` to open a goal, import / export, save a snippet, ...); the full list is in [Commands](#commands).
 
-- **确认并立即执行**（默认，直接 Enter）：保存计划，本轮澄清结束后自动开始执行；若澄清轮次被中断，则只保存，需在面板启动。
-- **确认，稍后从 /goal 执行**：只保存，之后在面板选择“执行 / 继续”。
-- **编辑 TODO**：在编辑器中逐行修改，保存后回到该选择；编辑取消或为空时保留原 TODO。
-- **取消**：停止规划，可稍后在面板继续澄清。
+Everything goes through `/goal`; `/goal-import`, `/goal-export`, `/goal-snippet` and `/goal-snippet-save` are only aliases.
 
-### 减少执行中的打断
+Statuses are shown as theme-colored [symbols](#status-symbols-and-colors). While a goal runs, the area above the input shows its TODO list and the footer shows progress, time and the current TODO; the `/goal` panel previews the selected goal's TODOs. When confirming a plan you can approve a list of high-impact actions with exact commands at once; after a run stops on a blocker, simply replying continues the goal (see [Fewer interruptions during execution](#fewer-interruptions-during-execution)).
 
-- **澄清时预检**：确认计划前，AI 对计划依赖的前置条件做只读检查（登录与凭据、权限、仓库或资源可见性、外部平台规则与期限），需要你决定或操作的事在澄清阶段就提出。
-- **一次性审批清单**：计划所需的高影响操作（push、tag、release、发布、部署、删除、发送消息等）以“动作说明 + 确切命令”列在确认对话框的“审批清单”中；确认计划即一并批准，执行中运行这些命令不再逐一询问。清单外的高影响操作、命令需实质改变或范围变化时仍会先询问；只能由你完成的步骤（2FA / OTP、浏览器登录）会标明由你执行。你的上层规则（如 Terraform apply 需在执行前单独批准）不受影响。修改目标后批准失效，需重新澄清确认。
-- **阻塞时先做完能做的**：执行提示词要求遇到阻塞时先完成所有不依赖它的 TODO、准备可预备的产物（草稿、提交、命令），再把待决问题合并成一条提问；继续时先核对状态变化，不重复没有新信息的问题。
-- **回复即续接**：一轮执行处理了目标但仍有未完成 TODO 而结束（待确认）时，状态栏显示“↩ 下条消息将续接目标 #N”。你的下一条普通消息（非 `/` 命令、非 `!` shell）会让目标自动恢复为执行中：计时、widget 与 `goal_todo` 可用，并向 AI 注入目标与 TODO 状态。续接只对下一条消息生效；若该轮没有推进目标（例如消息与目标无关），结束后目标回到待确认且不再续接。在 `/goal` 中暂停目标、开始其他目标或重新澄清会取消续接。
+Running, pausing, editing, cancelling and rollback requests are supported. Goals are persisted as UUIDv7 JSON files (see [Storage](storage.md)); rollback cannot guarantee every operation is reversible, and high-risk actions still need approval.
 
-面板中的“查看目标定义”与 `/goal status` 会显示审批清单及其状态（已批准 / 建议项）。
+## Clarification and confirmation
 
-直接输入 `/goal` 打开目标管理面板，默认展示当前 Session 的目标。共有三个范围：
+`/goal <task>` creates the goal; the current AI then asks questions to clarify scope, acceptance criteria and constraints, and drafts a TODO list.
 
-- **当前 Session**：当前 workspace 中，由当前 session 创建的目标。
-- **当前 Workspace**：当前工作目录下全部目标，不限创建 session。
-- **所有 Goal**：汇总本插件登记过的所有 workspace 的目标，并显示所属路径。
+Clarification is answered by keyboard where possible:
 
-三个范围相互包含，不是互斥分类。其他 workspace 的目标只读展示详情及状态；执行或修改需在所属 workspace 中进行。旧文件未记录 session 时只出现在 Workspace / 所有 Goal 中。
+- **Single choice**: when the AI offers options, choose with ↑↓ and Enter — no need to type a/b/c.
+- **Multiple choice**: ↑↓ to move, Space to tick, Enter to confirm, Escape to cancel; with nothing ticked, Enter picks the highlighted item. Multiple answers are saved joined by "；". RPC clients cannot show custom components and fall back to multi-line text input (one item per line).
+- **Yes / no**: choose "是 / 否" instead of typing yes/no.
+- Every option list ends with "其他（自定义输入）" (other), which opens an editor for free text; questions whose answers cannot be enumerated use the editor directly.
 
-TUI 中面板仿照 [pi-prompt-history](https://github.com/light4/pi-prompt-history)：带边框，标题显示当前范围与数量，每行目标附灰色说明（TODO 进度、累计执行时长、更新时间；所有 Goal 中另附 workspace）。列表下方显示所选目标的详情：完整标题（含状态文字，最多 3 行，更长时提示在“查看目标定义”中查看全文）、TODO 进度、累计执行时长与更新时间，其下预览 TODO（最多约 8 行，按执行中或首个未完成项折叠），底部为状态图例与按键提示。
+Confirming the TODOs is a single choice:
 
-### 状态符号与颜色
+- **确认并立即执行 — confirm and run now** (default, just press Enter): save the plan and start execution automatically once the clarification turn ends; if that turn is interrupted, the plan is only saved and can be started from the panel.
+- **确认，稍后从 /goal 执行 — confirm, run later**: save only; start later with "执行 / 继续" (run / continue) in the panel.
+- **编辑 TODO — edit TODOs**: edit line by line in an editor, then return to this choice; a cancelled or empty edit keeps the previous TODOs.
+- **取消 — cancel**: stop planning; clarification can be resumed later from the panel.
 
-列表、widget、状态栏与选择弹窗只显示符号；`/goal status`、状态详情和目标详情显示“符号 + 文字”。颜色使用当前 pi 主题色，随主题变化：
+Without a selected model, or with a model missing credentials, a new goal is saved as awaiting clarification and no AI turn starts; resume it from the panel ("继续澄清") once configured.
 
-| 目标状态 | 符号 | 颜色 |
+## Fewer interruptions during execution
+
+- **Preflight during clarification**: before the plan is confirmed, the AI runs read-only checks of everything the plan depends on (logins and credentials, permissions, repository or resource visibility, external platform rules and deadlines) and raises anything that needs your decision or action during clarification.
+- **One-time approval list**: high-impact actions the plan needs (push, tag, release, publish, deploy, delete, sending messages, ...) are listed with an action description and exact command in the confirmation dialog's approval list; confirming the plan approves them all, and running them during execution needs no further confirmation. High-impact actions outside the list, materially changed commands or a changed scope still require asking first; steps only you can perform (2FA / OTP, browser login) are marked as yours. Your higher-level rules (e.g. Terraform apply needing approval right before it runs) are unaffected. Editing the goal invalidates the approvals until the plan is clarified and confirmed again.
+- **Finish what you can when blocked**: the execution prompt asks the AI, when blocked, to first complete every TODO that does not depend on the blocker and prepare what it can (drafts, commits, commands), then ask all pending questions in one message; when continuing, it checks what changed first and does not repeat questions without new information.
+- **Reply to continue**: when a run worked on the goal but ended with unfinished TODOs (awaiting review), the footer shows "↩ 下条消息将续接目标 #N" (next message continues goal #N). Your next ordinary message (not a `/` command or `!` shell line) resumes the goal automatically: timing, the widget and `goal_todo` work again, and the goal and TODO status are given to the AI. The continuation applies to that next message only; if that turn makes no progress on the goal (e.g. the message is unrelated), the goal returns to awaiting review and is not continued again. Pausing the goal, starting another goal or re-clarifying in `/goal` cancels the continuation.
+
+"查看目标定义" (view goal definition) in the panel and `/goal status` show the approval list and its state (approved / suggested).
+
+## Goal panel
+
+`/goal` opens the goal manager, showing the current session's goals by default. There are three scopes:
+
+- **当前 Session — current session**: goals in the current workspace created by the current session.
+- **当前 Workspace — current workspace**: all goals in the current working directory, regardless of session.
+- **所有 Goal — all goals**: goals from every workspace this plugin has registered, with their paths.
+
+The scopes overlap rather than partition. Goals from other workspaces are read-only (details and status); run or edit them in their own workspace. Older files without a session only appear under Workspace / All goals.
+
+In the TUI the panel follows [pi-prompt-history](https://github.com/light4/pi-prompt-history): a bordered panel whose title shows the scope and count, with a grey description per goal (TODO progress, accumulated time, update time; plus the workspace under All goals). Below the list are the selected goal's details: the full title with its status word (up to 3 lines; longer titles point to "查看目标定义"), TODO progress, accumulated time and update time, followed by a TODO preview (about 8 lines, folded around the TODO in progress or the first unfinished one); a status legend and key hints sit at the bottom. The list is ordered running → awaiting review → paused → awaiting clarification → pending → done → cancelled, most recently updated first within a status.
+
+### Keys
+
+| Key | Action |
+|---|---|
+| `Tab` / `Shift+Tab` | Cycle scopes session → workspace → global |
+| `↑` `↓` / `PageUp` `PageDown` | Select a goal |
+| `/` | Search: fuzzy filter by goal text or id (e.g. `#3`); the search is kept when switching scopes |
+| `Enter` | Open the selected goal's action menu |
+| `Esc` | While searching, clear and leave the search; otherwise close the panel |
+| `r` | Run / continue; continues clarification if the plan is not confirmed |
+| `p` | Pause |
+| `t` | TODOs and status: status, progress, accumulated time and the TODO in progress / next at the top, the TODO list below; read-only for goals from other workspaces |
+| `n` | New: blank goal / from a snippet / import a goal template |
+| `e` / `c` / `d` | Edit / cancel / delete (cancel and delete still ask for confirmation) |
+
+Single-letter shortcuts work only outside search; unavailable actions (e.g. pausing a goal that is not running) show a hint, with the same state rules as the action menu. After an action you return to the panel with scope, search and selection kept; starting execution or clarification closes the panel.
+
+Dialog-only clients such as RPC use select lists: they open on the current session's list, "切换到：…" (switch to) items change scope, and "＋ 新增目标" (new goal) offers blank / snippet / import.
+
+### Action menu
+
+- **新增目标 / 继续澄清 — new goal / continue clarifying**: the AI asks questions, records answers and confirms a TODO plan; a cancelled clarification can be resumed later.
+- **展开 TODO — TODOs**: each TODO's status (pending, running, blocked or done), completion time and verification note. During execution the AI updates them with `goal_todo`; when idle you can mark a TODO done or reopen it. Marking done requires a verification note; the plugin records the time.
+- **执行 / 继续 — run / continue**: execute the goal with the current model and tools; continuing uses the existing conversation and the latest goal text.
+- **暂停 — pause**: pause the goal; if it is running, the current AI turn is aborted.
+- **修改 — edit**: edit the goal text; a running goal must be paused and the AI stopped first. After editing, the plan must be clarified and confirmed again; the old TODOs remain for reference until a new plan replaces them.
+- **标记完成 / 重新打开 — mark done / reopen**: once all TODOs are done, you confirm the whole goal as done; it can be reopened.
+- **取消目标 — cancel goal**: choose "保留已有操作" (keep changes) or "回滚所有操作" (roll back all changes), or go back. The record stays as cancelled; rollback first stops the goal, waits for tool calls to finish, then starts an AI rollback turn.
+- **删除 — delete**: delete the record after confirmation; a running goal is paused first. Deleting only removes the record; to undo changes, use "cancel goal" first.
+
+## Status display
+
+### Goal summary
+
+The area above the input shows a goal summary: the header counts goals per status; at most 3 unfinished goals are listed, ordered running → awaiting review → paused → awaiting clarification → pending, most recently updated first within a status; done and cancelled goals are not listed and, together with goals beyond the limit, fold into "… 另有 N 个未列出" (N more not listed); when everything has ended, only the header remains, noting "均已结束" (all ended). Long titles are cut to one line. The full list is in the `/goal` panel.
+
+### Status symbols and colors
+
+Lists, widgets, the footer and select dialogs show only symbols; `/goal status`, status and goal details show symbol plus word. Colors follow the current pi theme:
+
+| Goal status | Symbol | Color |
 |---|---|---|
-| 执行中 | `▶` | accent |
-| 待确认 | `◎` | warning（黄） |
-| 待澄清 | `?` | warning（黄） |
-| 待执行 | `○` | muted（灰） |
-| 已暂停 | `‖` | muted（灰） |
-| 已完成 | `✓` | success（绿） |
-| 已取消 | `✗` | error（红） |
+| Running (执行中) | `▶` | accent |
+| Awaiting review (待确认) | `◎` | warning (yellow) |
+| Awaiting clarification (待澄清) | `?` | warning (yellow) |
+| Pending (待执行) | `○` | muted (grey) |
+| Paused (已暂停) | `‖` | muted (grey) |
+| Done (已完成) | `✓` | success (green) |
+| Cancelled (已取消) | `✗` | error (red) |
 
-TODO：`✓` 已完成（绿）、`▶` 执行中（accent）、`✗` 阻塞（红）、`○` 待执行（灰）。颜色只在 TUI 中显示；RPC 客户端与无 UI 输出为纯文本，仍保留符号。
+TODOs: `✓` done (green), `▶` running (accent), `✗` blocked (red), `○` pending (grey). Colors appear only in the TUI; RPC clients and output without a UI get plain text that keeps the symbols.
 
-### TODO 列表
+### TODO list
 
-“展开 TODO”（快捷键 `t`，顶部附状态与进度，取代原来单独的状态快捷键）与 `/goal status` 以缩进列表展示 TODO：首行为状态符号与 TODO 文本，下一行灰色显示完成时间和完成说明或阻塞说明。TUI 中“展开 TODO”每项与说明各占一行（过长截断，Enter 打开的对话框显示全文），可用 ↑↓ 选择（列表较长时滚动）、Enter 标记完成或重新打开、Esc 返回；RPC 客户端使用选择列表，每项一行。
+"展开 TODO" (shortcut `t`, with status and progress at the top) and `/goal status` show TODOs as an indented list: the first line has the status symbol and TODO text, and a grey second line shows the completion time and done or blocked note. In the TUI each TODO and note takes one row (long text is cut; the dialog opened with Enter shows it in full); use ↑↓ to select (long lists scroll), Enter to mark done or reopen, Esc to go back. RPC clients get a select list with one row per TODO.
 
-| 按键 | 作用 |
+### Execution status
+
+While a goal runs, the area above the input shows that goal's TODO view, returning to the goal summary when the run ends, pauses or is cancelled:
+
+- Header: the goal, TODO progress (e.g. `TODO 3/9`) and accumulated execution time.
+- TODOs are marked with [status symbols](#status-symbols-and-colors). With many TODOs only the one in progress (or the first unfinished one) and its neighbours are shown; the rest fold into "… 另有 N 项" (N more), at most 8 lines.
+- The footer shows `目标 #id · progress · time · current TODO`.
+
+Time accumulates across all runs of a goal; paused, awaiting-review and other idle periods do not count. It refreshes every minute while running, to minute precision. If the process exits unexpectedly, the run is settled at its last recorded update.
+
+`/goal status #<id>` prints the full status: goal status, progress, accumulated time, the TODO in progress or next, each TODO's completion time and done or blocked note, and the approval list. Without an id it shows the running goal, or a summary of the current session's unfinished goals when none is running.
+
+## Commands
+
+Everything goes through `/goal`:
+
+| Usage | Action |
 |---|---|
-| `Tab` / `Shift+Tab` | 循环切换范围 session → workspace → global |
-| `↑` `↓` / `PageUp` `PageDown` | 选择目标 |
-| `/` | 进入搜索，按目标文本或编号（如 `#3`）模糊过滤；切换范围时保留搜索 |
-| `Enter` | 打开所选目标的操作菜单 |
-| `Esc` | 搜索中先清空并退出搜索，否则关闭面板 |
-| `r` | 执行 / 继续；计划未确认时继续澄清 |
-| `p` | 暂停 |
-| `t` | 展开 TODO 与状态：顶部显示状态、进度、累计时长与正在执行 / 下一项，下面是 TODO 列表；其他 workspace 的目标只读浏览 |
-| `n` | 新增：空白目标 / 从 Snippet 创建 / 导入 Goal 模板 |
-| `e` / `c` / `d` | 修改 / 取消 / 删除（删除和取消仍需确认） |
+| `/goal` | Open the goal panel (current session by default; Tab switches scope) |
+| `/goal <task>` | Create a goal and clarify its TODOs interactively |
+| `/goal #<id>` | Open that goal's action menu in the current workspace |
+| `/goal status [#<id>]` | Show goal status, TODO progress and accumulated time |
+| `/goal @` / `/goal @<snippet> [extra context]` | Create a goal from a [snippet](snippets.md) |
+| `/goal import <file.goal.sexp>` | Import a template, see [Sharing](sharing.md) |
+| `/goal export <id> [file.goal.sexp]` | Export a template |
+| `/goal export <id> @<name>` | Save as a global snippet |
+| `/goal help` | Show usage |
 
-单字母快捷键只在未进入搜索时生效；不可用的操作（如暂停未在执行的目标）会给出提示，状态限制与操作菜单相同。操作结束后回到面板，保留范围、搜索与选中项；开始执行或澄清时面板关闭。
+Opening a goal requires `#`: `/goal #1`. A bare number such as `/goal 1` is ambiguous; it suggests `#1` and neither opens nor creates a goal. Text is treated as a subcommand only when it matches the forms above exactly: the `export` id must be numeric, `import` / `export` files must end with `.goal.sexp`, and `@` must be followed by a valid snippet name. Any other text (e.g. `/goal import the customer data`) creates a new goal. After typing `/goal `, subcommands, `#<id>` and snippet names autocomplete.
 
-RPC 等仅支持对话框的客户端使用选择列表：默认进入当前 Session 列表，列表中的“切换到：…”项切换范围，“＋ 新增目标”包含空白 / Snippet / 导入。
+`/goal-import`, `/goal-export`, `/goal-snippet` and `/goal-snippet-save` are aliases with the same behavior as the corresponding usage above.
 
-操作菜单提供：
+## Execution boundaries
 
-- **新增目标 / 继续澄清**：由 AI 提问，记录回答并确认 TODO 计划；取消问答后可稍后继续。
-- **展开 TODO**：查看每项的待执行、执行中、阻塞或已完成状态、完成时间及验证说明。执行中由 AI 使用 `goal_todo` 更新；空闲时可人工标记完成或重新打开。标记完成必须填写验证依据，时间由插件记录。
-- **执行 / 继续**：使用当前模型和工具执行所选目标；继续时结合已有会话上下文和最新目标文本。
-- **暂停**：暂停目标；如果该目标正在执行，会中止当前 AI 轮次。
-- **修改**：编辑目标文本；执行中的目标须先暂停并等待 AI 停止。修改目标后必须重新澄清并确认计划；旧 TODO 保留供参考，新计划确认后替换。
-- **标记完成 / 重新打开**：所有 TODO 完成后由用户确认整个目标完成，也可重新打开。
-- **取消目标**：选择“保留已有操作”或“回滚所有操作”，也可返回不取消。取消后记录仍保留为已取消；选择回滚会先停止当前目标、等待工具调用结束，再启动 AI 回滚轮次。
-- **删除**：确认后删除记录；正在执行的目标会先被暂停。删除只清理记录，若需要撤销操作，请先使用“取消目标”。
+- Uses the current session's model and tools without spawning extra agents; one goal runs at a time.
+- `/goal <task>` creates a goal and starts clarifying; while the AI is busy it is only saved as awaiting clarification — nothing is interrupted or queued.
+- The panel can be opened while the AI runs; pausing only aborts the current run and does not undo completed file changes, external operations or previously queued messages. Deleting a goal likewise undoes no changes and deletes no conversation history.
+- Existing project rules and approval requirements still apply, and a goal is not authorization for high-risk actions; only commands on the approval list confirmed with the plan may run directly.
+- "回滚所有操作" (roll back all changes) is a rollback request for the AI to verify and carry out, not a snapshot restore, and cannot guarantee every operation is reversible. The AI identifies the goal's changes from the session's tool calls and current state, protecting pre-existing work and other goals' changes, and asks first when attribution or the original state is unclear. External, destructive, production or other high-risk reversals still need explicit approval. Results are reported in the conversation; a goal shown as cancelled does not mean rollback has completed.
+- Rollback cannot interrupt another running task; if it is aborted or cannot start, choose "取消目标 → 回滚所有操作" on the goal again. The plugin never runs `git reset --hard` or wipes the working tree on its own.
+- Continuing after a pause is a new AI turn, not a process-level resume; review the AI's output and verification results.
+- Without a UI, `/goal` prints goals and TODOs as notifications; goal drafts can be saved, but interactive clarification and confirmation need the TUI or an RPC client that supports dialogs.
 
-输入区上方显示目标摘要：标题行按状态统计数量；只列出最多 3 个未结束的目标，按“执行中 → 待确认 → 已暂停 → 待澄清 → 待执行”排序，同状态内最近更新的在前；已完成、已取消的目标默认不列出，与超出的目标一起折叠为“… 另有 N 个未列出”；全部结束时只显示标题行（注明“均已结束”）。过长的标题截断为一行。`/goal` 面板的列表使用相同排序，完整列表在面板中查看。
-
-### 执行状态
-
-目标执行中，输入区上方改为显示该目标的 TODO 视图，执行结束、暂停或取消后恢复为目标摘要：
-
-- 标题行：目标、TODO 进度（如 `TODO 3/9`）和累计执行时长。
-- TODO 以[状态符号](#状态符号与颜色)标注。TODO 较多时只显示执行中（或首个未完成）项及其前后几项，其余折叠为“… 另有 N 项”，列表不超过 8 行。
-- 底部状态栏显示 `目标 #编号 · 进度 · 时长 · 当前 TODO`。
-
-时长累计该目标所有执行轮次，暂停、待确认等非执行期间不计；执行中每分钟刷新，精确到分钟。进程意外退出时，该轮按最后一次记录的更新时间结算。
-
-`/goal status #<编号>` 输出完整状态：目标状态、进度、累计时长、正在执行或下一项 TODO，以及每项的完成时间、完成说明或阻塞说明。`/goal status` 不带编号时，显示执行中的目标；没有执行中目标时，显示当前 Session 所有未完成目标的摘要。
-
-## 命令
-
-所有功能都通过 `/goal` 完成：
-
-| 用法 | 作用 |
-|---|---|
-| `/goal` | 打开目标面板（默认当前 Session，Tab 切换范围） |
-| `/goal <任务>` | 新增目标并交互式澄清 TODO |
-| `/goal #<编号>` | 直接打开当前 workspace 中该目标的操作菜单 |
-| `/goal status [#<编号>]` | 查看目标状态、TODO 进度与累计执行时长 |
-| `/goal @` / `/goal @<snippet> [补充信息]` | 用 [Snippet](snippets.md) 创建目标 |
-| `/goal import <文件.goal.sexp>` | 导入模板，见[目标分享](sharing.md) |
-| `/goal export <编号> [文件.goal.sexp]` | 导出模板 |
-| `/goal export <编号> @<名称>` | 保存为全局 Snippet |
-| `/goal help` | 显示用法 |
-
-打开目标必须写 `#`：`/goal #1`。纯数字 `/goal 1` 有歧义，会提示改用 `#1`，不会打开或新建目标。只有严格匹配上述形式时才视为子命令：`export` 的编号必须是纯数字，`import` / `export` 的文件必须以 `.goal.sexp` 结尾，`@` 后必须是合法的 snippet 名称。其他文字（例如 `/goal import the customer data`）都作为新目标。输入 `/goal ` 后支持自动补全子命令、`#<编号>` 和 snippet 名称。
-
-`/goal-import`、`/goal-export`、`/goal-snippet`、`/goal-snippet-save` 是辅助别名，功能与上表对应用法一致。
-
-未选择模型或模型缺少凭据时，新目标保存为待澄清，不会启动 AI 轮次；配置后可在面板“继续澄清”。
-
-### 执行边界
-
-- 使用当前会话的模型和工具，不创建额外 agent；同一时间只执行一个目标。
-- `/goal <任务>` 新增并开始澄清；AI 忙碌时只保存为待澄清，不打断或自动排队。
-- 面板可在 AI 执行期间打开；暂停只中止当前执行，不撤销已完成的文件修改、外部操作或先前排队的其他消息。删除目标同样不撤销改动或删除会话历史。
-- 保留已有项目规则和审批要求，不把目标视为高风险操作的授权。
-- “回滚所有操作”是交给 AI 核对并执行的回滚请求，不是快照恢复，也不保证所有操作可撤销。AI 根据会话工具记录和当前状态识别该目标的改动，保护原有工作与其他目标的改动；归属不清或缺少原始状态时先询问。外部、破坏性、生产及其他高风险回滚仍须明确审批。结果会在对话中报告；目标显示“已取消”不代表回滚已完成。
-- 回滚不能打断其他正在执行的任务；如果回滚被中止或未能启动，可再次选择该目标的“取消目标 → 回滚所有操作”重试。插件不会自动执行 `git reset --hard` 或清空工作区。
-- 暂停后的继续是新的 AI 轮次，不是进程级断点恢复；请审阅 AI 输出及验证结果。
-- 无 UI 模式下 `/goal` 通过通知输出目标及 TODO；可保存目标草稿，但交互式澄清与确认需要 TUI 或支持对话框的 RPC 客户端。
-
-
-[返回 README](../README.md)
+[Back to README](../README.md)

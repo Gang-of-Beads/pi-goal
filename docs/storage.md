@@ -1,13 +1,15 @@
-# 数据存储
+English | [中文](storage.zh-CN.md)
 
-目标状态：`待澄清 → 确认 TODO → 待执行 → 执行中 → 待确认`，也可切换为 `已暂停`、`已取消` 或由用户标记为 `已完成`。AI 轮次结束不等于目标已完成，因此不会自动标记成功；取消执行或最终报错会标为已暂停。
+# Storage
 
-每个目标保存为当前项目下 `.pi/goals/<uuidv7>.json`，包含 UUID、项目内显示编号、目标文本、创建/更新时间、澄清问答、计划确认状态、完整 TODO（状态、完成时间及验证依据）、累计执行时长（可选字段 `elapsedMs`，毫秒；执行中另有当前轮开始时间 `runStartedAt`，旧文件缺省按 0 计）、审批清单（可选字段 `approvals`：动作说明与确切命令；`approvalsConfirmed` 表示是否已在确认计划时批准，导入的目标为 `false`），以及目标文本/状态/TODO 的变更历史。
+Goal states: `awaiting clarification → TODOs confirmed → pending → running → awaiting review`; a goal can also become `paused` or `cancelled`, or be marked `done` by you. An AI turn ending does not mean the goal is done, so success is never marked automatically; aborted runs and final errors mark the goal as paused.
 
-文件记录所属 `workspace` 和创建时的 `sessionId`。workspace 索引保存在 Pi agent 目录下 `pi-goal/workspaces/`（默认 `~/.pi/agent/pi-goal/workspaces/`），每个 workspace 一个索引文件，供“所有 Goal”发现目标；不扫描整个磁盘。
+Each goal is saved as `.pi/goals/<uuidv7>.json` in the current project, containing the UUID, the project-local display id, goal text, creation / update times, clarification answers, plan confirmation state, full TODOs (status, completion time and verification note), accumulated execution time (optional `elapsedMs` in milliseconds; while running there is also `runStartedAt` for the current run; older files count as 0), the approval list (optional `approvals`: action descriptions and exact commands; `approvalsConfirmed` records whether they were approved when the plan was confirmed — `false` for imported goals), and a history of goal text / status / TODO changes.
 
-文件采用原子替换写入，文件权限为 `0600`。检测到其他会话修改了文件时拒绝覆盖，需 `/reload` 后再操作。多个会话可以查看同一个项目的目标。无法解析或校验失败的目标文件、workspace 索引会提示并跳过，不修改、不删除，也不影响其他目标；编号重复时保留最早创建的目标，后创建的自动改用新编号并写回。恢复时执行中的目标标为已暂停，不自动续跑。删除目标会删除对应 JSON 文件。旧版本会话记录不会自动迁移；工具调用和完整 AI 对话仍由 Pi 会话保存，不复制到目标文件。
+Files record their `workspace` and the creating `sessionId`. The workspace registry lives in the Pi agent directory under `pi-goal/workspaces/` (default `~/.pi/agent/pi-goal/workspaces/`), one index file per workspace, so "All goals" can find goals without scanning the disk.
 
-这些 JSON 可能包含敏感的问答和验证信息；是否将 `.pi/goals/` 加入项目 `.gitignore` 由你决定。
+Files are written by atomic replacement with mode `0600`. If another session changed a file, overwriting is refused; run `/reload` and try again. Several sessions can view the same project's goals. Unparseable or invalid goal files and workspace index entries are reported and skipped — never modified or deleted — without affecting other goals; on duplicate ids the earliest goal keeps its id and later ones are renumbered and written back. On restore, running goals are marked paused and never resume on their own. Deleting a goal deletes its JSON file. Older session records are not migrated; tool calls and full AI conversations stay in Pi's sessions and are not copied into goal files.
 
-[返回 README](../README.md)
+These JSON files may contain sensitive clarification answers and verification notes; whether to add `.pi/goals/` to the project's `.gitignore` is up to you.
+
+[Back to README](../README.md)

@@ -1,82 +1,84 @@
-# 本地开发
+English | [中文](development.zh-CN.md)
 
-## 本地加载
+# Development
 
-在本仓库运行：
+## Load locally
+
+In this repository:
 
 ```sh
 pi -e ./src/index.ts
 ```
 
-或从其他项目安装本地插件（路径换成实际位置）：
+Or install the local plugin from another project (use the actual path):
 
 ```sh
 pi install /absolute/path/to/pi-goal
 ```
 
-安装后启动 Pi，已有会话可用 `/reload` 重新加载插件。
+Then start Pi; existing sessions can reload the plugin with `/reload`.
 
-## 开发
+## Develop
 
-使用 TypeScript、pnpm，插件入口为 `src/index.ts`。测试目录仅保留 `e2e/`，使用 Node 内置测试运行器，不额外引入测试框架。
+TypeScript and pnpm; the plugin entry is `src/index.ts`. Tests live only in `e2e/` and use Node's built-in test runner, with no extra test framework.
 
 ```sh
 pnpm install
 pnpm check
 ```
 
-Pi 直接加载 TypeScript，无需构建产物。`pnpm check` 执行类型检查和 E2E 测试；单独运行 E2E 可用 `pnpm test:e2e`。
+Pi loads TypeScript directly, so there is no build output. `pnpm check` runs the typecheck and E2E tests; `pnpm test:e2e` runs E2E only.
 
-## E2E 覆盖
+## E2E coverage
 
-`e2e/goal.test.mjs` 启动依赖包内的真实 Pi CLI 子进程，通过 RPC 命令和 extension UI 请求/响应操作插件，不 mock 插件 API。每项用例使用独立的临时 workspace 和 Pi agent 目录，退出后清理，所有 RPC 等待均有超时。
+`e2e/goal.test.mjs` starts the real Pi CLI from the dependency as a child process and drives the plugin through RPC commands and extension UI requests / responses, without mocking the plugin API. Each test uses its own temporary workspace and Pi agent directory, cleaned up afterwards, and every RPC wait has a timeout.
 
-当前用例覆盖：
+Covered today:
 
-- 插件加载和 `/goal` 命令注册。
-- RPC 选择列表降级：默认当前 Session、“切换到：…”范围项、“＋ 新增目标”子菜单、跨 session 的筛选，以及其他 workspace 的只读详情（TUI 自定义面板需在真实终端验证）。
-- 展开 TODO、人工完成、完成时间和验证说明落盘。
-- 取消时保留操作、回滚选项展示。
-- 重启后的 JSON 持久化及删除目标文件。
-- S 表达式导出 / 导入往返、隐私字段排除、TODO 状态重置与确认后不自动执行。
-- 非法语法、未知 / 重复字段、版本、复杂度 / 大小限制、取消导入及拒绝覆盖已有导出文件。
-- `/goal` 统一入口：help、`/goal #<编号>` 直接打开目标并在操作后保持菜单、不存在的编号、纯数字输入被拒绝（不打开、不新建目标）、类似子命令的普通文本仍创建目标、非法 snippet 名称、别名与主命令一致；无可用模型凭据时不启动 AI 轮次。
-- `/goal status`：TODO 图标、完成时间与完成 / 阻塞说明、累计时长，中断运行在加载时按最后更新时间结算，无执行中目标时的 Session 摘要，`status` 不会新建目标。
-- Snippet：内置列表、补充项目信息、全局保存（审阅编辑）、跨 workspace 复用、用户 snippet 覆盖内置、拒绝覆盖与非法名称、取消不创建。
-- 设计目标、8 个 CHECK 维度、基准与有界复审规则的导入、重启、面板查看及导出保真；不支持的优先级、重复维度与无限复审配置会拒绝。
+- Plugin loading and `/goal` command registration.
+- RPC select-list fallback: current session by default, "切换到：…" scope items, the "＋ 新增目标" submenu, cross-session filtering, and read-only details for other workspaces (the TUI panel must be verified in a real terminal).
+- TODO view, manual completion, and persisted completion time and verification notes.
+- Cancelling with kept changes, and the rollback option.
+- JSON persistence across restarts and deletion of goal files.
+- S-expression export / import round trips, exclusion of private fields, TODO state reset, no automatic run after confirming, and approvals exported as suggestions and imported unapproved.
+- Invalid syntax, unknown / duplicate fields, versions, complexity / size limits, malformed approvals, cancelled imports and refusing to overwrite existing exports.
+- `/goal` as the single entry point: help, `/goal #<id>` opening a goal and keeping the menu after actions, unknown ids, bare numbers rejected (neither opened nor created), subcommand-like ordinary text still creating goals, invalid snippet names, aliases matching the main command; no AI turn without usable model credentials.
+- `/goal status`: TODO icons, completion times and done / blocked notes, accumulated time, interrupted runs settled at their last update on load, the session summary when nothing is running, and `status` never creating a goal.
+- Snippets: built-in list, extra project context, global save (with review), reuse across workspaces, user snippets overriding built-ins, refusing overwrites and invalid names, cancel creating nothing.
+- Design objectives, 8 CHECK dimensions, benchmarks and bounded review rules surviving import, restart, panel view and export; unsupported priorities, duplicate dimensions and unbounded reviews are rejected.
 
-用例预置 goal JSON，不调用模型或外部服务、无需凭据。尚未覆盖真实 AI 的澄清提问、执行与回滚，也不验证终端视觉和键盘交互；这些不能由 RPC 面板测试替代。
+Tests seed goal JSON and call no model or external service, so no credentials are needed. Real AI clarification, execution and rollback, terminal visuals and keyboard interaction are not covered and cannot be replaced by RPC panel tests.
 
 ## Git hooks
 
-使用 `prek.toml` 配置 pre-commit 检查。首次克隆后运行：
+`prek.toml` configures pre-commit checks. After cloning, run:
 
 ```sh
 prek install
 ```
 
-提交时检查尾随空格、文件末尾换行、大文件、合并冲突，以及 JSON / TOML / YAML 格式。源码、E2E 或相关配置变更时，还会执行类型检查和现有 E2E 测试；不向这些命令传入文件名。
+Commits check trailing whitespace, final newlines, large files, merge conflicts and JSON / TOML / YAML syntax. Changes to sources, E2E or related configuration also run the typecheck and existing E2E tests; no file names are passed to these commands.
 
-手动检查所有已跟踪文件：
+Check all tracked files manually:
 
 ```sh
 prek run --all-files
 ```
 
-当前未额外配置 lint、format 工具；GitHub Actions 只有发版用的 `publish.yml`（见下文）。
+No lint or format tool is configured; GitHub Actions only has `publish.yml` for releases (see below).
 
-## 发版
+## Release
 
-1. 更新 `package.json` 的 `version` 与 README 中的安装示例版本，运行 `pnpm check`。
-2. 提交并推送 `main`，再推送对应的 `vX.Y.Z` tag。
-3. 为该 tag 发布 GitHub Release（说明分 Changes / Validation / Install 三段）。[publish.yml](../.github/workflows/publish.yml) 会校验 tag 与 `package.json` 版本一致，运行类型检查与测试，然后通过 OIDC 以 provenance 发布到 npm；GitHub 中不保存 npm token。
+1. Update `version` in `package.json` and the install examples in both READMEs (`README.md`, `README.zh-CN.md`), then run `pnpm check`.
+2. Commit and push `main`, then push the matching `vX.Y.Z` tag.
+3. Publish a GitHub Release for the tag (notes in three parts: Changes / Validation / Install). [publish.yml](../.github/workflows/publish.yml) verifies the tag matches `package.json`, runs the typecheck and tests, and publishes to npm with provenance via OIDC; no npm token is stored in GitHub.
 
-npm 包所有者的一次性配置（需要 npm 11.19+ 与 2FA）：
+One-time setup by the npm package owner (needs npm 11.19+ and 2FA):
 
 ```sh
 npm trust github @light4/pi-goal --repo light4/pi-goal --file publish.yml --allow-publish --yes
 ```
 
-trusted publishing 只能为已存在的包配置，因此 v0.1.0 由包所有者在本机手动执行 `npm publish --access public` 首发，之后再配置上述信任关系；后续版本均通过 GitHub Release 自动发布。发布失败时修复原因后重新运行失败的 GitHub Actions job；更新使用方之前先确认 GitHub Release 与 npm 版本均已就绪。
+Trusted publishing can only be configured for an existing package, so v0.1.0 was published manually by the owner with `npm publish --access public` before configuring the trust above; later versions are all published through GitHub Releases. If publishing fails, fix the cause and rerun the failed GitHub Actions job; confirm both the GitHub Release and the npm version before updating consumers.
 
-[返回 README](../README.md)
+[Back to README](../README.md)
