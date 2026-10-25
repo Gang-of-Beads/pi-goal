@@ -21,6 +21,23 @@ const TODO_COLORS: Record<TodoStatus, StatusColor> = { done: "success", running:
 export const GOAL_LEGEND = (["running", "review", "clarifying", "pending", "paused", "done", "cancelled"] as const)
   .map((status) => `${GOAL_ICONS[status]} ${LABELS[status]}`).join(" · ");
 
+/** Display priority: active work first, finished goals last. */
+const STATUS_ORDER: Record<GoalStatus, number> = { running: 0, review: 1, paused: 2, clarifying: 3, pending: 4, done: 5, cancelled: 6 };
+
+/** Goals ordered by status priority, then most recently updated, so active work is never folded away. */
+export function sortGoals<T extends Goal>(goals: readonly T[]): T[] {
+  const updated = (goal: Goal) => (goal.updatedAt ? Date.parse(goal.updatedAt) : 0) || 0;
+  return [...goals].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status] || updated(b) - updated(a) || b.id - a.id);
+}
+
+/** Per-status counts as colored symbols, e.g. "▶ 1 · ◎ 2 · ✓ 3", in priority order. */
+export function statusCounts(goals: readonly Goal[], paint: Paint = plain): string {
+  const counts = new Map<GoalStatus, number>();
+  for (const goal of goals) counts.set(goal.status, (counts.get(goal.status) ?? 0) + 1);
+  return [...counts].sort(([a], [b]) => STATUS_ORDER[a] - STATUS_ORDER[b])
+    .map(([status, count]) => `${paint(GOAL_COLORS[status], GOAL_ICONS[status])} ${count}`).join(" · ");
+}
+
 export function goalIcon(goal: Goal, paint: Paint = plain): string {
   return paint(GOAL_COLORS[goal.status], GOAL_ICONS[goal.status]);
 }
@@ -33,11 +50,14 @@ export function todoIcon(todo: GoalTodo, paint: Paint = plain): string {
 }
 
 const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+/** Cap a one-line text at `max` characters so compact views stay on one terminal row. */
+const clip = (text: string, max: number) => ([...text].length > max ? `${[...text].slice(0, max - 1).join("")}…` : text);
 
 /** List label: symbol only, no status word. */
-export function goalListLabel(goal: Goal, paint: Paint = plain): string {
+export function goalListLabel(goal: Goal, paint: Paint = plain, maxText = Infinity): string {
   const progressText = goal.todos?.length ? ` · ${progress(goal)}` : "";
-  return `${goalIcon(goal, paint)} #${goal.id} ${oneLine(goal.text)}${progressText}`;
+  // Compact views cap the title so each goal stays on one line.
+  return `${goalIcon(goal, paint)} #${goal.id} ${clip(oneLine(goal.text), maxText)}${progressText}`;
 }
 
 /** Grey second line of a TODO: completion time and done / blocked note. */
@@ -93,16 +113,16 @@ export function focusTodo(goal: Goal): GoalTodo | undefined {
   return todos.find((todo) => todo.status === "running") ?? todos.find((todo) => todo.status !== "done");
 }
 
-export function todoLine(todo: GoalTodo, paint: Paint = plain): string {
-  return `${todoIcon(todo, paint)} TODO #${todo.id} ${oneLine(todo.text)}`;
+export function todoLine(todo: GoalTodo, paint: Paint = plain, maxText = Infinity): string {
+  return `${todoIcon(todo, paint)} TODO #${todo.id} ${clip(oneLine(todo.text), maxText)}`;
 }
 
 /**
  * At most `max` lines: the focused TODO with its neighbours; the rest fold into "… 另有 N 项" markers.
  */
-export function todoWindow(goal: Goal, max = 8, paint: Paint = plain): string[] {
+export function todoWindow(goal: Goal, max = 8, paint: Paint = plain, maxText = Infinity): string[] {
   const todos = goal.todos ?? [];
-  const line = (todo: GoalTodo) => todoLine(todo, paint);
+  const line = (todo: GoalTodo) => todoLine(todo, paint, maxText);
   if (todos.length <= max) return todos.map(line);
   const focus = focusTodo(goal);
   const center = focus ? todos.indexOf(focus) : todos.length - 1;
@@ -133,8 +153,8 @@ export function statusBarText(goal: Goal, now = Date.now(), paint: Paint = plain
 
 export function runningWidget(goal: Goal, now = Date.now(), paint: Paint = plain): string[] {
   return [
-    `${goalIcon(goal, paint)} Goal #${goal.id} ${oneLine(goal.text)} · ${progress(goal)} · 已执行 ${formatDuration(elapsedMs(goal, now))} ${paint("dim", "· /goal status 查看详情")}`,
-    ...todoWindow(goal, 8, paint),
+    `${goalIcon(goal, paint)} Goal #${goal.id} ${clip(oneLine(goal.text), 40)} · ${progress(goal)} · 已执行 ${formatDuration(elapsedMs(goal, now))} ${paint("dim", "· /goal status 查看详情")}`,
+    ...todoWindow(goal, 8, paint, 60),
   ];
 }
 

@@ -7,7 +7,7 @@ import { parseGoalTemplate, readGoalTemplate, serializeGoalTemplate, writeGoalTe
 import { listSnippets, saveSnippet, validateSnippetName, type GoalSnippet } from "./snippets.ts";
 import { chooseMany, chooseOne, chooseYesNo } from "./choice.ts";
 import { showGoalPicker, showTodoList, type PickerView } from "./picker.ts";
-import { goalListLabel, goalStatusText, LABELS, plain, runningWidget, statusBarText, statusDetails, statusSummary, TODO_LABELS, todoLine, todoListLines, todoNote, trackElapsed, type Paint } from "./status.ts";
+import { goalListLabel, goalStatusText, sortGoals, statusCounts, LABELS, plain, runningWidget, statusBarText, statusDetails, statusSummary, TODO_LABELS, todoLine, todoListLines, todoNote, trackElapsed, type Paint } from "./status.ts";
 
 const RUN_NOW = "确认并立即执行";
 const RUN_LATER = "确认，稍后从 /goal 执行";
@@ -202,10 +202,14 @@ export default function goalExtension(pi: ExtensionAPI) {
       return;
     }
     stopTicker();
-    ctx.ui.setWidget("pi-goal", state.goals.length ? [
-      `Goals · ${state.goals.length} 个目标 · /goal 管理`,
-      ...state.goals.slice(0, 5).map((goal) => goalListLabel(goal, paint)),
-      ...(state.goals.length > 5 ? [`… 另有 ${state.goals.length - 5} 个目标，打开 /goal 查看全部`] : []),
+    // Active and recently updated goals first; finished ones are the first to fold away.
+    const goals = sortGoals(state.goals);
+    const shown = goals.slice(0, 5);
+    const hidden = goals.slice(5);
+    ctx.ui.setWidget("pi-goal", goals.length ? [
+      `Goals · ${goals.length} 个目标 · ${statusCounts(goals, paint)} · /goal 管理`,
+      ...shown.map((goal) => goalListLabel(goal, paint, 40)),
+      ...(hidden.length ? [paint("dim", `… 另有 ${hidden.length} 个（${statusCounts(hidden)}），打开 /goal 查看全部`)] : []),
     ] : undefined);
   }
 
@@ -612,9 +616,9 @@ export default function goalExtension(pi: ExtensionAPI) {
       }
     }
     return [
-      { title: "当前 Session", goals: state.goals.filter((goal) => goal.sessionId === ctx.sessionManager.getSessionId()) },
-      { title: "当前 Workspace", goals: state.goals },
-      { title: "所有 Goal", goals: all },
+      { title: "当前 Session", goals: sortGoals(state.goals.filter((goal) => goal.sessionId === ctx.sessionManager.getSessionId())) },
+      { title: "当前 Workspace", goals: sortGoals(state.goals) },
+      { title: "所有 Goal", goals: sortGoals(all) },
     ];
   }
 

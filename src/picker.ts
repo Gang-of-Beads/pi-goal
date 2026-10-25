@@ -1,5 +1,5 @@
 import { DynamicBorder, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, fuzzyFilter, Input, Key, matchesKey, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
+import { Container, fuzzyFilter, Input, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Goal } from "./index.ts";
 import { elapsedMs, formatDuration, GOAL_LEGEND, goalIcon, type Paint, plain, progress, todoListLines, todoWindow } from "./status.ts";
 import type { GoalTodo } from "./index.ts";
@@ -102,7 +102,8 @@ export function showGoalPicker(ctx: ExtensionContext, groups: readonly PickerGro
           // Preview of the selected goal's TODOs, folded around the one in progress.
           const preview = current.todos?.length ? todoWindow(current, 8, paint) : [theme.fg("dim", current.planConfirmed ? "暂无 TODO" : "尚未确认 TODO 计划")];
           container.addChild(new Text(theme.fg("dim", `TODO · #${current.id}${current.todos?.length ? ` · ${progress(current)}` : ""}`), 1, 0));
-          for (const line of preview) container.addChild(new Text(`  ${line}`, 1, 0));
+          // One row per TODO so a long plan never pushes the goal list off screen.
+          for (const line of preview) container.addChild(new Text(truncateToWidth(`  ${line}`, Math.max(10, width - 2), "…"), 1, 0));
         }
         container.addChild(new Text(theme.fg("dim", `图例：${GOAL_LEGEND}`), 1, 0));
         container.addChild(new Text(theme.fg("dim", view.searching
