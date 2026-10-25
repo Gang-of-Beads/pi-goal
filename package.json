@@ -1,6 +1,6 @@
 {
   "name": "@light4/pi-goal",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "packageManager": "pnpm@12.10.1",
   "description": "Turn goals into actionable AI tasks with /goal in Pi",
   "type": "module",
