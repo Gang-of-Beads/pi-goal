@@ -4,13 +4,13 @@
 
 ## 快速开始
 
-从 npm 安装 v0.1.2：
+从 npm 安装 v0.1.3：
 
 ```sh
-pi install npm:@light4/pi-goal@0.1.2
+pi install npm:@light4/pi-goal@0.1.3
 ```
 
-或从 GitHub 安装同一版本：`pi install git:github.com/light4/pi-goal@v0.1.2`。
+或从 GitHub 安装同一版本：`pi install git:github.com/light4/pi-goal@v0.1.3`。
 
 在 Pi 中：
 
