@@ -1,7 +1,7 @@
 import { DynamicBorder, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, fuzzyFilter, Input, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Container, fuzzyFilter, Input, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Goal } from "./index.ts";
-import { elapsedMs, formatDuration, GOAL_LEGEND, goalIcon, type Paint, plain, progress, todoListLines, todoWindow } from "./status.ts";
+import { elapsedMs, formatDuration, GOAL_LEGEND, goalIcon, goalStatusText, type Paint, plain, progress, todoListLines, todoWindow } from "./status.ts";
 import type { GoalTodo } from "./index.ts";
 
 export interface PickerGroup { title: string; goals: Goal[] }
@@ -99,9 +99,22 @@ export function showGoalPicker(ctx: ExtensionContext, groups: readonly PickerGro
         else container.addChild(new Text(theme.fg("warning", group.goals.length ? "没有匹配的目标" : `${group.title} 暂无目标 · 按 n 新增 · Tab 切换范围`), 1, 0));
         const current = matches[selectedIndex];
         if (current) {
+          // Details of the selected goal: list rows truncate the title, so show it in full here
+          // (at most 3 rows), followed by status, progress, time and workspace.
+          const inner = Math.max(10, width - 2);
+          container.addChild(new Text(theme.fg("dim", "─".repeat(Math.min(inner, 40))), 1, 0));
+          const title = wrapTextWithAnsi(`${goalStatusText(current, paint)} · #${current.id} ${current.text.replace(/\s+/g, " ").trim()}`, inner);
+          for (const line of title.slice(0, 3)) container.addChild(new Text(line, 1, 0));
+          if (title.length > 3) container.addChild(new Text(theme.fg("dim", "  …（完整内容按 Enter → 查看目标定义）"), 1, 0));
+          const meta = [
+            current.todos?.length ? progress(current) : current.planConfirmed ? "暂无 TODO" : "尚未确认 TODO 计划",
+            `累计执行 ${formatDuration(elapsedMs(current))}`,
+            ...(current.updatedAt ? [`更新于 ${new Date(current.updatedAt).toLocaleString()}`] : []),
+            ...(view.scope === 2 && current.workspace ? [current.workspace] : []),
+          ];
+          container.addChild(new Text(truncateToWidth(theme.fg("dim", meta.join(" · ")), inner, "…"), 1, 0));
           // Preview of the selected goal's TODOs, folded around the one in progress.
-          const preview = current.todos?.length ? todoWindow(current, 8, paint) : [theme.fg("dim", current.planConfirmed ? "暂无 TODO" : "尚未确认 TODO 计划")];
-          container.addChild(new Text(theme.fg("dim", `TODO · #${current.id}${current.todos?.length ? ` · ${progress(current)}` : ""}`), 1, 0));
+          const preview = current.todos?.length ? todoWindow(current, 8, paint) : [];
           // One row per TODO so a long plan never pushes the goal list off screen.
           for (const line of preview) container.addChild(new Text(truncateToWidth(`  ${line}`, Math.max(10, width - 2), "…"), 1, 0));
         }

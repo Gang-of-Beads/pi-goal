@@ -9,6 +9,8 @@ import { chooseMany, chooseOne, chooseYesNo } from "./choice.ts";
 import { showGoalPicker, showTodoList, type PickerView } from "./picker.ts";
 import { goalListLabel, goalStatusText, sortGoals, statusCounts, LABELS, plain, runningWidget, statusBarText, statusDetails, statusSummary, TODO_LABELS, todoLine, todoListLines, todoNote, trackElapsed, type Paint } from "./status.ts";
 
+/** Unfinished goals listed in the idle summary widget; the rest fold into one count line. */
+const SUMMARY_LIMIT = 3;
 const RUN_NOW = "确认并立即执行";
 const RUN_LATER = "确认，稍后从 /goal 执行";
 const EDIT_TODOS = "编辑 TODO";
@@ -202,14 +204,16 @@ export default function goalExtension(pi: ExtensionAPI) {
       return;
     }
     stopTicker();
-    // Active and recently updated goals first; finished ones are the first to fold away.
+    // Only unfinished goals are listed (active and recently updated first); done / cancelled
+    // ones are just counted, so the widget stays small and active work is never folded away.
     const goals = sortGoals(state.goals);
-    const shown = goals.slice(0, 5);
-    const hidden = goals.slice(5);
+    const open = goals.filter((goal) => goal.status !== "done" && goal.status !== "cancelled");
+    const shown = open.slice(0, SUMMARY_LIMIT);
+    const hidden = goals.filter((goal) => !shown.includes(goal));
     ctx.ui.setWidget("pi-goal", goals.length ? [
       `Goals · ${goals.length} 个目标 · ${statusCounts(goals, paint)} · /goal 管理`,
       ...shown.map((goal) => goalListLabel(goal, paint, 40)),
-      ...(hidden.length ? [paint("dim", `… 另有 ${hidden.length} 个（${statusCounts(hidden)}），打开 /goal 查看全部`)] : []),
+      ...(hidden.length ? [paint("dim", `${shown.length ? "… 另有 " : "均已结束："}${hidden.length} 个（${statusCounts(hidden)}），打开 /goal 查看全部`)] : []),
     ] : undefined);
   }
 
