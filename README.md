@@ -7,10 +7,10 @@ A lightweight [Pi](https://pi.dev) extension: clarify a goal with `/goal`, confi
 ## Install
 
 ```sh
-pi install npm:@light4/pi-goal@0.1.3
+pi install npm:@light4/pi-goal@0.2.0
 ```
 
-Or install the same release from GitHub: `pi install git:github.com/light4/pi-goal@v0.1.3`.
+Or install the same release from GitHub: `pi install git:github.com/light4/pi-goal@v0.2.0`.
 
 ## Quick start
 
