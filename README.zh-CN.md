@@ -7,10 +7,10 @@
 ## 安装
 
 ```sh
-pi install npm:@light4/pi-goal@0.2.1
+pi install npm:@light4/pi-goal@0.2.2
 ```
 
-或从 GitHub 安装同一版本：`pi install git:github.com/light4/pi-goal@v0.2.1`。
+或从 GitHub 安装同一版本：`pi install git:github.com/light4/pi-goal@v0.2.2`。
 
 ## 快速开始
 
