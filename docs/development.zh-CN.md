@@ -76,9 +76,9 @@ prek run --all-files
 npm 包所有者的一次性配置（需要 npm 11.19+ 与 2FA）：
 
 ```sh
-npm trust github @light4/pi-goal --repo light4/pi-goal --file publish.yml --allow-publish --yes
+npm trust github @gang-of-beads/pi-goal --repo Gang-of-Beads/pi-goal --file publish.yml --allow-publish --yes
 ```
 
-trusted publishing 只能为已存在的包配置，因此 v0.1.0 由包所有者在本机手动执行 `npm publish --access public` 首发，之后再配置上述信任关系；后续版本均通过 GitHub Release 自动发布。发布失败时修复原因后重新运行失败的 GitHub Actions job；更新使用方之前先确认 GitHub Release 与 npm 版本均已就绪。
+trusted publishing 只能为已存在的包配置。本仓库从 `light4/pi-goal` 迁出时 `@gang-of-beads/pi-goal` 已存在（此前无关项目的 0.x 版本），因此 1.0.0 起均通过 GitHub Release 自动发布；0.2.2 及之前的版本以 `@light4/pi-goal` 发布。发布失败时修复原因后重新运行失败的 GitHub Actions job；更新使用方之前先确认 GitHub Release 与 npm 版本均已就绪。
 
 [返回 README](../README.zh-CN.md)
