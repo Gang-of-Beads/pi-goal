@@ -76,9 +76,9 @@ No lint or format tool is configured; GitHub Actions only has `publish.yml` for 
 One-time setup by the npm package owner (needs npm 11.19+ and 2FA):
 
 ```sh
-npm trust github @light4/pi-goal --repo light4/pi-goal --file publish.yml --allow-publish --yes
+npm trust github @gang-of-beads/pi-goal --repo Gang-of-Beads/pi-goal --file publish.yml --allow-publish --yes
 ```
 
-Trusted publishing can only be configured for an existing package, so v0.1.0 was published manually by the owner with `npm publish --access public` before configuring the trust above; later versions are all published through GitHub Releases. If publishing fails, fix the cause and rerun the failed GitHub Actions job; confirm both the GitHub Release and the npm version before updating consumers.
+Trusted publishing can only be configured for an existing package. `@gang-of-beads/pi-goal` already existed (0.x from an earlier, unrelated project) when this repository moved from `light4/pi-goal`, so 1.0.0 and later are all published through GitHub Releases; versions up to 0.2.2 were published as `@light4/pi-goal`. If publishing fails, fix the cause and rerun the failed GitHub Actions job; confirm both the GitHub Release and the npm version before updating consumers.
 
 [Back to README](../README.md)

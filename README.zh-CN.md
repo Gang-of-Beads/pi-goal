@@ -7,10 +7,12 @@
 ## 安装
 
 ```sh
-pi install npm:@light4/pi-goal@0.2.2
+pi install npm:@gang-of-beads/pi-goal@1.0.0
 ```
 
-或从 GitHub 安装同一版本：`pi install git:github.com/light4/pi-goal@v0.2.2`。
+或从 GitHub 安装同一版本：`pi install git:github.com/Gang-of-Beads/pi-goal@v1.0.0`。
+
+0.2.2 及之前的版本以 `@light4/pi-goal` 发布；1.0.0 取代此前无关的 `@gang-of-beads/pi-goal` 0.x（旧项目已归档为 [Gang-of-Beads/pi-goal-archive](https://github.com/Gang-of-Beads/pi-goal-archive)）。
 
 ## 快速开始
 
