@@ -1,6 +1,6 @@
 {
   "name": "@gang-of-beads/pi-goal",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "packageManager": "pnpm@12.10.1",
   "description": "Turn goals into actionable AI tasks with /goal in Pi",
   "type": "module",
