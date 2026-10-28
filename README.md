@@ -7,10 +7,10 @@ A lightweight [Pi](https://pi.dev) extension: clarify a goal with `/goal`, confi
 ## Install
 
 ```sh
-pi install npm:@gang-of-beads/pi-goal@1.0.0
+pi install npm:@gang-of-beads/pi-goal@1.0.1
 ```
 
-Or install the same release from GitHub: `pi install git:github.com/Gang-of-Beads/pi-goal@v1.0.0`.
+Or install the same release from GitHub: `pi install git:github.com/Gang-of-Beads/pi-goal@v1.0.1`.
 
 Versions up to 0.2.2 were published as `@light4/pi-goal`; 1.0.0 replaces the earlier, unrelated `@gang-of-beads/pi-goal` 0.x (now archived at [Gang-of-Beads/pi-goal-archive](https://github.com/Gang-of-Beads/pi-goal-archive)).
 

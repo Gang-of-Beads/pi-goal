@@ -15,9 +15,32 @@ async function customText(ctx: ExtensionContext, title: string): Promise<string 
   return text?.trim() || undefined;
 }
 
+type CardAnswer = { values?: { answer?: { selected?: string[]; other?: string } } } | undefined;
+
+/**
+ * Hosts listing "card" in `ctx.ui.piWebScreens` (PI WEB) draw this declared choice card natively,
+ * with ticks for multiple choice and a box for a custom answer; pi's terminal ignores `web`.
+ * Returns undefined when the host draws no card or the options exceed its bounds, null when the
+ * card closed unanswered (cancelled, not asked again), otherwise the answers in option order.
+ */
+async function choiceCard(ctx: ExtensionContext, title: string, options: readonly string[], multiple: boolean): Promise<string[] | null | undefined> {
+  const screens = (ctx.ui as { piWebScreens?: readonly string[] }).piWebScreens;
+  if (ctx.mode === "tui" || !screens?.includes("card") || !options.length || options.length > 12 || [title, ...options].some((text) => text.length > 1000)) return undefined;
+  const field = { type: "choice", id: "answer", label: title, options: options.map((label, index) => ({ value: String(index), label })), other: "field", required: true, ...(multiple ? { multiple: true } : {}) };
+  const declaration = { web: { kind: "card", fields: [field] } } as Parameters<typeof ctx.ui.custom>[1];
+  const result = await ctx.ui.custom<CardAnswer>((_tui, _theme, _keybindings, done) => ({ render: () => [title], invalidate() {}, handleInput: () => done(undefined) }), declaration);
+  const answer = result?.values?.answer;
+  const other = answer?.other?.trim();
+  const picked = [...options.filter((_option, index) => answer?.selected?.includes(String(index))), ...(other ? [other] : [])];
+  return picked.length ? picked : null;
+}
+
 /** Single choice with ↑↓ + Enter. Returns undefined when cancelled. */
 export async function chooseOne(ctx: ExtensionContext, title: string, options: readonly string[]): Promise<string | undefined> {
-  const selected = await ctx.ui.select(title, [...normalizeOptions(options), OTHER_OPTION]);
+  const items = normalizeOptions(options);
+  const card = await choiceCard(ctx, title, items, false);
+  if (card !== undefined) return card?.[0];
+  const selected = await ctx.ui.select(title, [...items, OTHER_OPTION]);
   if (selected === undefined) return undefined;
   return selected === OTHER_OPTION ? customText(ctx, title) : selected;
 }
@@ -28,6 +51,8 @@ export async function chooseOne(ctx: ExtensionContext, title: string, options: r
  */
 export async function chooseMany(ctx: ExtensionContext, title: string, options: readonly string[]): Promise<string[] | undefined> {
   const items = [...normalizeOptions(options), OTHER_OPTION];
+  const card = await choiceCard(ctx, title, items.slice(0, -1), true);
+  if (card !== undefined) return card ?? undefined;
   if (ctx.mode !== "tui") {
     const text = await ctx.ui.editor(`${title}\n可多选，每行填写一项：\n${items.slice(0, -1).map((option) => `- ${option}`).join("\n")}`);
     const answers = text?.split("\n").map((line) => line.replace(/^\s*[-*]\s*/, "").trim()).filter(Boolean) ?? [];

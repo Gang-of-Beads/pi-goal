@@ -31,9 +31,9 @@ Running, pausing, editing, cancelling and rollback requests are supported. Goals
 Clarification is answered by keyboard where possible:
 
 - **Single choice**: when the AI offers options, choose with ↑↓ and Enter — no need to type a/b/c.
-- **Multiple choice**: ↑↓ to move, Space to tick, Enter to confirm, Escape to cancel; with nothing ticked, Enter picks the highlighted item. Multiple answers are saved joined by "；". RPC clients cannot show custom components and fall back to multi-line text input (one item per line).
+- **Multiple choice**: ↑↓ to move, Space to tick, Enter to confirm, Escape to cancel; with nothing ticked, Enter picks the highlighted item. Multiple answers are saved joined by "；". RPC clients cannot show custom components and fall back to multi-line text input (one item per line). Hosts that draw interactive cards (PI WEB) show single choice, multiple choice and yes / no with up to 12 options as one card, where a box under the options takes the custom answer.
 - **Yes / no**: choose "是 / 否" instead of typing yes/no.
-- Every option list ends with "其他（自定义输入）" (other), which opens an editor for free text; questions whose answers cannot be enumerated use the editor directly.
+- Outside cards, every option list ends with "其他（自定义输入）" (other), which opens an editor for free text; questions whose answers cannot be enumerated use the editor directly.
 
 Confirming the TODOs is a single choice:
 
