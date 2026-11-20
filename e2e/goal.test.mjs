@@ -562,3 +562,78 @@ test("real Pi RPC: /goal status shows TODO icons, notes and elapsed time; interr
   const widget = rpc.records.filter((record) => record.method === "setWidget").at(-1);
   assert.match(widget.widgetLines[0], /Goals · 1 个目标/);
 });
+
+test("real Pi RPC: another live session's running goal stays running and unwritten", { timeout: 60000 }, async (t) => {
+  const data = await fixture(t);
+  const { rpc, state } = await data.start();
+  const path = await seed(data.agent, data.workspace, state.sessionId);
+  const owner = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore" });
+  t.after(() => owner.kill("SIGKILL"));
+  // The owning session is running the goal: open run, last update 5 minutes later, long history.
+  const now = Date.now();
+  const running = JSON.parse(await readFile(path, "utf8"));
+  Object.assign(running, {
+    status: "running", ownerPid: owner.pid, runStartedAt: new Date(now - 60 * 60_000).toISOString(),
+    updatedAt: new Date(now - 55 * 60_000).toISOString(),
+    todos: [{ id: 1, text: "核验结果", status: "running" }],
+    history: Array.from({ length: 60 }, (_, index) => ({ at: new Date(now - index * 1000).toISOString(), status: "pending", text: "旧记录", todos: [] })),
+  });
+  await writeFile(path, `${JSON.stringify(running)}\n`);
+  const snapshot = await readFile(path, "utf8");
+  await rpc.command("new_session");
+
+  // A second session leaves the live run alone: no pause, no elapsed truncation, no write at all.
+  const notice = () => rpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === "info");
+  await rpc.command("prompt", { message: "/goal status #1" });
+  assert.match((await notice()).message, /^▶ 执行中 · #1 /);
+  assert.equal(await readFile(path, "utf8"), snapshot);
+
+  // Once the owner is gone, the next session pauses the goal, books the run and caps the history.
+  const exited = once(owner, "exit");
+  owner.kill("SIGKILL");
+  await exited;
+  await rpc.command("new_session");
+  const saved = JSON.parse(await readFile(path, "utf8"));
+  assert.equal(saved.status, "paused");
+  assert.equal(saved.runStartedAt, undefined);
+  assert.equal(saved.elapsedMs, 5 * 60_000);
+  assert.equal(saved.todos[0].status, "pending");
+  assert.equal(saved.history.length, 50);
+});
+
+test("real Pi RPC: a cross-session conflict refuses one save, then the next one goes through", { timeout: 60000 }, async (t) => {
+  const data = await fixture(t);
+  const { rpc, state } = await data.start();
+  const path = await seed(data.agent, data.workspace, state.sessionId);
+  await rpc.command("new_session");
+  // Both sessions load the same goal before either writes it.
+  const second = (await data.start()).rpc;
+
+  const completeTodo = async (target) => {
+    const pending = target.command("prompt", { message: "/goal #1" }).catch((error) => error);
+    await target.select("展开 TODO");
+    await target.select("TODO #1 ");
+    await target.select("标记 TODO 完成");
+    const editor = await target.dialog("editor");
+    target.respond(editor, { value: "人工核验通过" });
+    await pending;
+  };
+
+  await completeTodo(second);
+  assert.equal(JSON.parse(await readFile(path, "utf8")).status, "done");
+
+  // Our baseline is stale now, so this save is refused instead of silently overwriting.
+  const conflict = rpc.wait((record) => record.type === "extension_error");
+  await completeTodo(rpc);
+  assert.match((await conflict).error, /was changed in another session/);
+  assert.equal(JSON.parse(await readFile(path, "utf8")).status, "done");
+
+  // The refused save re-read the file, so reopening the goal is written instead of failing forever.
+  const pending = rpc.command("prompt", { message: "/goal #1" });
+  const menu = await rpc.dialog("select");
+  assert.ok(menu.options.includes("重新打开"));
+  rpc.respond(menu, { value: "重新打开" });
+  await rpc.select("返回列表");
+  await pending;
+  assert.equal(JSON.parse(await readFile(path, "utf8")).status, "pending");
+});

@@ -2,7 +2,7 @@ import { getAgentDir, type ExtensionAPI, type ExtensionCommandContext, type Exte
 import { resolve } from "node:path";
 import { Type } from "typebox";
 import { uuidv7 } from "@earendil-works/pi-ai";
-import { GoalStorage, knownWorkspaces } from "./storage.ts";
+import { GoalConflictError, GoalStorage, knownWorkspaces } from "./storage.ts";
 import { parseGoalTemplate, readGoalTemplate, serializeGoalTemplate, validateApprovals, writeGoalTemplate, type Approval, type GoalTemplate } from "./sexp.ts";
 import { listSnippets, saveSnippet, validateSnippetName, type GoalSnippet } from "./snippets.ts";
 import { chooseMany, chooseOne, chooseYesNo } from "./choice.ts";
@@ -11,6 +11,8 @@ import { approvalSummary, goalListLabel, goalStatusText, sortGoals, statusCounts
 
 /** Unfinished goals listed in the idle summary widget; the rest fold into one count line. */
 const SUMMARY_LIMIT = 3;
+/** Saved history entries per goal; older ones only grow the file, the newest tell the story. */
+const HISTORY_LIMIT = 50;
 const RUN_NOW = "确认并立即执行";
 const RUN_LATER = "确认，稍后从 /goal 执行";
 const EDIT_TODOS = "编辑 TODO";
@@ -48,6 +50,8 @@ export interface Goal {
   elapsedMs?: number;
   /** Start of the current run while the goal is running. */
   runStartedAt?: string;
+  /** Pi process running the current run, so another session can tell a live run from an abandoned one. */
+  ownerPid?: number;
   /** High-impact actions with exact commands, listed for one-time approval at plan confirmation. */
   approvals?: Approval[];
   /** True only after the user confirmed the plan with these approvals; templates never set it. */
@@ -72,7 +76,17 @@ export function buildGoalPrompt(goal: string): string {
   ].join("\n");
 }
 
-export function restoreGoals(entries: readonly SessionEntry[]): GoalState {
+/** A pid that still exists. EPERM means alive, just owned by another user. */
+function pidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/** Error text without the redundant "Error: " prefix that String(error) adds. */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function restoreGoals(entries: readonly SessionEntry[], isAlive: (pid: number) => boolean = pidAlive): GoalState {
   let state: GoalState = { goals: [], nextId: 1 };
   for (const entry of entries) {
     if (entry.type !== "custom" || entry.customType !== STATE_TYPE) continue;
@@ -94,13 +108,17 @@ export function restoreGoals(entries: readonly SessionEntry[]): GoalState {
       (goal.elapsedMs === undefined || (typeof goal.elapsedMs === "number" && Number.isFinite(goal.elapsedMs) && goal.elapsedMs >= 0)) &&
       (goal.approvalsConfirmed === undefined || typeof goal.approvalsConfirmed === "boolean") &&
       (goal.approvals === undefined || (Array.isArray(goal.approvals) && (() => { try { validateApprovals(goal.approvals); return true; } catch { return false; } })())) &&
-      (goal.runStartedAt === undefined || (typeof goal.runStartedAt === "string" && Number.isFinite(Date.parse(goal.runStartedAt)))))) continue;
+      (goal.runStartedAt === undefined || (typeof goal.runStartedAt === "string" && Number.isFinite(Date.parse(goal.runStartedAt)))) &&
+      (goal.ownerPid === undefined || (Number.isSafeInteger(goal.ownerPid) && goal.ownerPid > 0)))) continue;
     try { for (const goal of data.goals) serializeGoalTemplate(templateFromGoal(goal)); }
     catch { continue; }
     state = structuredClone({ goals: data.goals, nextId: data.nextId });
   }
-  // A saved running flag cannot resume work by itself after reload or branching.
+  // A saved running flag cannot resume work by itself after reload or branching, unless another
+  // live session still runs it: such a goal stays untouched so save() writes nothing for it.
   for (const goal of state.goals) {
+    // shortcut: a reused pid counts as the same owner; stale "running" then needs a manual pause.
+    if (goal.status === "running" && goal.ownerPid !== undefined && goal.ownerPid !== process.pid && isAlive(goal.ownerPid)) continue;
     if (goal.status === "running") goal.status = "paused";
     for (const todo of goal.todos ?? []) if (todo.status === "running") todo.status = "pending";
     // An interrupted run (crash, killed process) ends at its last recorded update, not at reload time.
@@ -288,8 +306,10 @@ export default function goalExtension(pi: ExtensionAPI) {
       if (persisted.get(goal.uuid) === content) continue;
       goal.updatedAt = new Date().toISOString();
       (goal.history ??= []).push({ at: goal.updatedAt, status: goal.status, text: goal.text, todos: structuredClone(goal.todos ?? []) });
+      if (goal.history.length > HISTORY_LIMIT) goal.history = goal.history.slice(-HISTORY_LIMIT);
       try { storage.write(goal); } catch (error) {
-        storageError = String(error);
+        // A conflict re-reads the file, so the next save can proceed; anything else is latched.
+        if (!(error instanceof GoalConflictError)) storageError = errorMessage(error);
         throw error;
       }
       persisted.set(goal.uuid, JSON.stringify(goal));
@@ -319,7 +339,7 @@ export default function goalExtension(pi: ExtensionAPI) {
       save(ctx);
     } catch (error) {
       state = { goals: [], nextId: 1 };
-      storageError = String(error);
+      storageError = errorMessage(error);
       ctx.ui.notify(`加载目标失败：${storageError}`, "error");
     }
     refresh(ctx);
@@ -370,6 +390,7 @@ export default function goalExtension(pi: ExtensionAPI) {
     planningId = undefined;
     resumableId = undefined;
     goal.status = "running";
+    goal.ownerPid = process.pid;
     activeId = goal.id;
     runFailed = false;
     runWorked = true;
@@ -599,6 +620,7 @@ export default function goalExtension(pi: ExtensionAPI) {
     resumableId = undefined;
     if (!goal || activeId !== undefined || !ctx.isIdle()) { if (!goal) refresh(ctx); return; }
     goal.status = "running";
+    goal.ownerPid = process.pid;
     activeId = goal.id;
     continuingId = goal.id;
     runFailed = false;

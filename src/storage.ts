@@ -42,6 +42,9 @@ export function knownWorkspaces(agentDir: string): { workspaces: string[]; error
   return { workspaces, errors };
 }
 
+/** Another session changed the goal file. The baseline is re-read, so a retry can succeed. */
+export class GoalConflictError extends Error {}
+
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** One atomic JSON file per goal. Refuse to overwrite another session's edits. */
@@ -129,7 +132,10 @@ export class GoalStorage {
     try { content = readFileSync(this.path(uuid), "utf8"); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    if (content !== this.originals.get(uuid)) throw new Error(`Goal ${uuid} was changed in another session. Reload before editing.`);
+    if (content === this.originals.get(uuid)) return;
+    // Re-baseline on the current file so callers can retry instead of failing forever.
+    if (content === undefined) this.originals.delete(uuid); else this.originals.set(uuid, content);
+    throw new GoalConflictError(`Goal ${uuid} was changed in another session. Reload before editing.`);
   }
 
   write(goal: Goal) {
