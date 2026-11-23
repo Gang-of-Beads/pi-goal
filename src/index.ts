@@ -239,6 +239,8 @@ export default function goalExtension(pi: ExtensionAPI) {
   let generation = 0;
   let panelOpen = false;
   let storage: GoalStorage | undefined;
+  /** Storages of other workspaces, primed by a load so a foreign write is conflict-checked too. */
+  const foreignStorages = new Map<string, GoalStorage>();
   let storageError: string | undefined;
   let persisted = new Map<string, string>();
 
@@ -295,9 +297,29 @@ export default function goalExtension(pi: ExtensionAPI) {
     ] : undefined);
   }
 
+  /**
+   * The storage a goal belongs to: its own workspace's, not the session's. A goal adopted from
+   * another project must be written back where it came from, or the two projects end up with two
+   * copies of one goal and edit them apart.
+   */
+  function storageForGoal(goal: Goal, ctx: ExtensionContext): GoalStorage {
+    if (!goal.workspace || resolve(goal.workspace) === resolve(ctx.cwd)) {
+      storage ??= new GoalStorage(getAgentDir(), ctx.cwd);
+      return storage;
+    }
+    const key = resolve(goal.workspace);
+    let foreign = foreignStorages.get(key);
+    if (!foreign) {
+      foreign = new GoalStorage(getAgentDir(), key);
+      // Prime the conflict baseline; an unreadable directory surfaces on the write.
+      try { foreign.load(); } catch { /* keep the empty baseline */ }
+      foreignStorages.set(key, foreign);
+    }
+    return foreign;
+  }
+
   function save(ctx: ExtensionContext) {
     if (storageError) throw new Error(storageError);
-    storage ??= new GoalStorage(getAgentDir(), ctx.cwd);
     for (const goal of state.goals) {
       goal.uuid ??= uuidv7();
       goal.createdAt ??= new Date().toISOString();
@@ -307,7 +329,7 @@ export default function goalExtension(pi: ExtensionAPI) {
       goal.updatedAt = new Date().toISOString();
       (goal.history ??= []).push({ at: goal.updatedAt, status: goal.status, text: goal.text, todos: structuredClone(goal.todos ?? []) });
       if (goal.history.length > HISTORY_LIMIT) goal.history = goal.history.slice(-HISTORY_LIMIT);
-      try { storage.write(goal); } catch (error) {
+      try { storageForGoal(goal, ctx).write(goal); } catch (error) {
         // A conflict re-reads the file, so the next save can proceed; anything else is latched.
         if (!(error instanceof GoalConflictError)) storageError = errorMessage(error);
         throw error;
@@ -326,6 +348,7 @@ export default function goalExtension(pi: ExtensionAPI) {
     continuingId = undefined;
     runFailed = false;
     storage = new GoalStorage(getAgentDir(), ctx.cwd);
+    foreignStorages.clear();
     storageError = undefined;
     persisted = new Map();
     try {
@@ -566,6 +589,73 @@ export default function goalExtension(pi: ExtensionAPI) {
     },
   });
 
+  /** Shared by the lifecycle tools: resolve `#id` / `<folder>#id` and report why a goal may not move. */
+  function goalForTool(spec: string, ctx: ExtensionContext): Goal {
+    const goal = findGoal(spec, ctx);
+    if (!goal) throw new Error(`No goal ${spec} here. Use goal_status to see this project's goals.`);
+    return goal;
+  }
+
+  pi.registerTool({
+    name: "goal_status",
+    label: "Goal status",
+    description: "Read goal status, TODOs and whether a live run owns the goal, for this project's goal `id` or another project's `folder#id`. Call it before starting, pausing or cancelling so the transition is legal.",
+    parameters: Type.Object({ id: Type.Optional(Type.String({ description: "Goal `#id`, or `project#id` for another project. Omit for this project's running or unfinished goals." })) }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const goal = params.id === undefined ? undefined : goalForTool(params.id, ctx);
+      const live = goal?.status === "running" && goal.ownerPid !== undefined && goal.ownerPid !== process.pid && pidAlive(goal.ownerPid);
+      const text = goal === undefined
+        ? statusSummary(state.goals.filter((item) => item.sessionId === ctx.sessionManager.getSessionId()), undefined, plain)
+        : statusDetails(goal, undefined, plain);
+      return { content: [{ type: "text", text: `${text}${live ? "\nOwned by another live session." : ""}` }], details: goal === undefined ? undefined : structuredClone(goal) };
+    },
+  });
+
+  pi.registerTool({
+    name: "goal_run",
+    label: "Goal run",
+    description: "Start or continue a confirmed goal, the same transition `/goal run` makes. Refuses when a turn is already running, the plan is unconfirmed (use goal_plan) or a live session owns the goal.",
+    parameters: Type.Object({ id: Type.String({ description: "Goal `#id`, or `project#id` for another project." }) }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const goal = goalForTool(params.id, ctx);
+      if (goal.status === "running" && goal.ownerPid !== undefined && goal.ownerPid !== process.pid && pidAlive(goal.ownerPid)) {
+        throw new Error(`Goal ${params.id} is owned by another live session; pause it there or wait.`);
+      }
+      directAction(goal, "run", ctx);
+      return { content: [{ type: "text", text: `Goal ${params.id}: ${goal.status}` }], details: { status: goal.status } };
+    },
+  });
+
+  pi.registerTool({
+    name: "goal_pause",
+    label: "Goal pause",
+    description: "Pause a running goal. Its in-flight turn is aborted and running TODOs go back to pending, as `/goal pause` does.",
+    parameters: Type.Object({ id: Type.String({ description: "Goal `#id`, or `project#id` for another project." }) }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const goal = goalForTool(params.id, ctx);
+      if (goal.status !== "running" && activeId !== goal.id) throw new Error(`Goal ${params.id} is not running (${goal.status}).`);
+      pause(goal, ctx);
+      return { content: [{ type: "text", text: `Goal ${params.id}: paused` }], details: { status: goal.status } };
+    },
+  });
+
+  pi.registerTool({
+    name: "goal_cancel",
+    label: "Goal cancel",
+    description: "Cancel a goal, keeping its completed work; with rollback it also sends the rollback turn `/goal` offers. Refuses when another turn is running.",
+    parameters: Type.Object({
+      id: Type.String({ description: "Goal `#id`, or `project#id` for another project." }),
+      rollback: Type.Optional(Type.Boolean({ description: "Also roll back the operations attributable to this goal." })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const goal = goalForTool(params.id, ctx);
+      if (goal.status === "cancelled") throw new Error(`Goal ${params.id} is already cancelled.`);
+      const cancelled = await cancel(goal, ctx, () => true, params.rollback === true);
+      if (!cancelled) throw new Error(`Goal ${params.id} was not cancelled (the choice dialog was closed).`);
+      return { content: [{ type: "text", text: `Goal ${params.id}: cancelled${params.rollback === true ? ", rollback requested" : ""}` }], details: { status: goal.status } };
+    },
+  });
+
   function pause(goal: Goal, ctx: ExtensionContext) {
     if (resumableId === goal.id) resumableId = undefined;
     goal.status = "paused";
@@ -660,14 +750,17 @@ export default function goalExtension(pi: ExtensionAPI) {
     generation++;
   });
 
-  async function cancel(goal: Goal, ctx: ExtensionCommandContext, isCurrent: () => boolean): Promise<boolean> {
-    const choice = await ctx.ui.select(`取消目标 #${goal.id}：是否回滚所有操作？`, [
-      "取消目标，保留已有操作",
-      "取消目标，回滚所有操作",
-      "返回",
-    ]);
-    if (!isCurrent() || !choice || choice === "返回") return false;
-    const rollback = choice === "取消目标，回滚所有操作";
+  async function cancel(goal: Goal, ctx: ExtensionContext, isCurrent: () => boolean, decide?: boolean): Promise<boolean> {
+    let rollback = decide ?? false;
+    if (decide === undefined) {
+      const choice = await ctx.ui.select(`取消目标 #${goal.id}：是否回滚所有操作？`, [
+        "取消目标，保留已有操作",
+        "取消目标，回滚所有操作",
+        "返回",
+      ]);
+      if (!isCurrent() || !choice || choice === "返回") return false;
+      rollback = choice === "取消目标，回滚所有操作";
+    }
     if (rollback && activeId !== goal.id && (!ctx.isIdle() || activeId !== undefined)) {
       ctx.ui.notify("其他任务正在执行，无法安全启动回滚。请等待其结束后重试。", "warning");
       return false;
@@ -681,7 +774,9 @@ export default function goalExtension(pi: ExtensionAPI) {
     if (!rollback) return false;
 
     // Command-only wait: finish in-flight tool calls before examining their effects.
-    if (wasActive) await ctx.waitForIdle();
+    // A tool context has no waitForIdle; there the rollback turn simply starts on the next turn.
+    const waitForIdle = (ctx as { waitForIdle?: () => Promise<void> }).waitForIdle;
+    if (wasActive && waitForIdle) await waitForIdle.call(ctx);
     if (!isCurrent()) return true;
     if (!ctx.isIdle() || activeId !== undefined) {
       ctx.ui.notify("目标已取消，但 AI 尚未空闲；未启动回滚。请稍后在目标面板重试。", "warning");
@@ -1022,13 +1117,9 @@ export default function goalExtension(pi: ExtensionAPI) {
         ctx.ui.notify("当前范围没有目标；按 n 新增或 Tab 切换范围。", "info");
         continue;
       }
-      if (!state.goals.includes(goal)) {
-        // Goals of other workspaces are read-only here.
-        if (result.type === "open") await ctx.ui.select(goalDetails(goal, paintFor(ctx)), ["返回面板"]);
-        else if (result.key === "t") await showTodoList(ctx, statusHeader(goal, undefined, paintFor(ctx)), goal.todos ?? [], 0, true);
-        else ctx.ui.notify(`此目标属于 ${goal.workspace}，只读；请在对应 workspace 中执行或修改。`, "info");
-        continue;
-      }
+      // A goal of another project joins this session so acting on it writes back to its own folder.
+      if (!state.goals.includes(goal)) ctx.ui.notify(`目标 ${workspaceName(goal.workspace ?? "")}#${goal.id} 属于 ${goal.workspace}，已接入本会话。`, "info");
+      adopt(goal);
       const outcome = result.type === "open" ? await goalMenu(goal, ctx, isCurrent) : await shortcut(goal, result.key, ctx, isCurrent);
       if (outcome === "exit") return;
     }
@@ -1057,7 +1148,7 @@ export default function goalExtension(pi: ExtensionAPI) {
       while (isCurrent()) {
         const groups = sections(ctx);
         const group = groups[scope]!;
-        const choices = group.goals.map((goal) => `${goalListLabel(goal)}${scope === 2 ? ` · ${goal.workspace} · ${goal.uuid?.slice(0, 8)}` : ""}`);
+        const choices = group.goals.map((goal) => `${goalListLabel(goal)}${goal.workspace && resolve(goal.workspace) !== resolve(ctx.cwd) ? ` · ${workspaceName(goal.workspace)}` : ""}${scope === 2 ? ` · ${goal.workspace}` : ""}`);
         const switches = groups.map((other, index) => ({ index, label: `切换到：${other.title} (${other.goals.length})` })).filter((item) => item.index !== scope);
         const selected = await ctx.ui.select(`Goals · ${group.title} · ${group.goals.length} 个目标`, ["＋ 新增目标", ...choices, ...switches.map((item) => item.label), "关闭"]);
         if (!isCurrent() || !selected || selected === "关闭") return;
@@ -1069,11 +1160,7 @@ export default function goalExtension(pi: ExtensionAPI) {
         }
         const goal = group.goals[choices.indexOf(selected)];
         if (!goal) continue;
-        if (goal.workspace !== resolve(ctx.cwd)) {
-          await ctx.ui.select(goalDetails(goal), ["返回列表"]);
-          if (isCurrent()) ctx.ui.notify(`此目标属于 ${goal.workspace}，请在对应 workspace 中执行或修改。`, "info");
-          continue;
-        }
+        adopt(goal);
         if (await goalMenu(goal, ctx, isCurrent) === "exit") return;
       }
     } finally {
@@ -1096,9 +1183,54 @@ export default function goalExtension(pi: ExtensionAPI) {
     "/goal help                     显示本帮助",
   ].join("\n");
 
-  function findGoal(id: string, ctx: ExtensionContext): Goal | undefined {
-    const goal = state.goals.find((item) => item.id === Number(id));
-    if (!goal) ctx.ui.notify(`当前 workspace 没有目标 #${id}。用 /goal 查看列表。`, "warning");
+  /** Last path segment, the name a goal of another project is addressed by: `/goal run playground#1`. */
+  function workspaceName(workspace: string): string {
+    return workspace.split("/").filter(Boolean).pop() ?? workspace;
+  }
+
+  /**
+   * Resolve `#<id>` or `<folder>#<id>`. A bare id means this workspace's goal first; only a
+   * qualified id reaches another project, because every project numbers its goals from 1 and a
+   * global id lookup is how one session started editing another project's goal.
+   */
+  function findGoal(rawSpec: string, ctx: ExtensionContext): Goal | undefined {
+    const spec = rawSpec.replace(/^#/, "");
+    const qualified = /^(.+)#(\d+)$/.exec(spec);
+    if (qualified) {
+      const [, folder, id] = qualified;
+      const matches = state.goals.filter((item) => item.id === Number(id) && item.workspace !== undefined && workspaceName(item.workspace) === folder);
+      if (matches.length === 1) return matches[0];
+      if (matches.length === 0) {
+        // Not adopted yet: read that project's goals from disk and take the one asked for.
+        for (const directory of knownWorkspaces(getAgentDir()).workspaces.filter((path) => workspaceName(path) === folder)) {
+          if (resolve(directory) === resolve(ctx.cwd)) continue;
+          try {
+            const found = new GoalStorage(getAgentDir(), directory).load().goals.find((item) => item.id === Number(id));
+            if (found) return adopt({ ...found, workspace: directory });
+          } catch { /* unreadable projects are reported by the panel */ }
+        }
+      }
+      ctx.ui.notify(matches.length ? `有 ${matches.length} 个目标叫 ${spec}；请先打开面板选择。` : `没有目标 ${spec}。外部目标先在 /goal 面板中打开一次。`, "warning");
+      return undefined;
+    }
+    const own = state.goals.filter((item) => item.id === Number(spec) && (!item.workspace || resolve(item.workspace) === resolve(ctx.cwd)));
+    if (own.length === 1) return own[0];
+    const foreign = state.goals.filter((item) => item.id === Number(spec));
+    if (foreign.length === 1) return foreign[0];
+    if (foreign.length > 1) {
+      ctx.ui.notify(`#${spec} 有多个目标：${foreign.map((item) => `${workspaceName(item.workspace ?? "")}#${String(item.id)}`).join("、")}。`, "warning");
+      return undefined;
+    }
+    ctx.ui.notify(`当前 workspace 没有目标 #${spec}。用 /goal 查看列表。`, "warning");
+    return undefined;
+  }
+
+  /**
+   * Take a goal of another project into this session's state so an action on it persists: `save`
+   * writes each goal through its own workspace, the goal keeps its id, and the panel labels it.
+   */
+  function adopt(goal: Goal): Goal {
+    if (!state.goals.includes(goal)) state.goals.push(goal);
     return goal;
   }
 
@@ -1106,7 +1238,7 @@ export default function goalExtension(pi: ExtensionAPI) {
    * Non-interactive run / pause for clients that drive /goal by command (e.g. a web page's buttons).
    * Applies the same checks as the panel shortcuts r and p, and always reports the outcome as a notice.
    */
-  function directAction(goal: Goal, action: "run" | "pause", ctx: ExtensionCommandContext) {
+  function directAction(goal: Goal, action: "run" | "pause", ctx: ExtensionContext) {
     const active = goal.status === "running" || activeId === goal.id;
     if (action === "run") {
       if (active) { ctx.ui.notify(`目标 #${goal.id} 正在执行；可用 /goal pause #${goal.id} 暂停。`, "info"); return; }
@@ -1167,11 +1299,12 @@ export default function goalExtension(pi: ExtensionAPI) {
       if (goal) await panel(ctx, goal);
       return;
     }
-    if ((match = /^status(?:\s+#?(\d+))?$/.exec(text))) {
+    // An id is `#3` for this workspace or `project#3` for another one (every project numbers from 1).
+    if ((match = /^status(?:\s+([^\s#]+#\d+|#?\d+))?$/.exec(text))) {
       statusCommand(match[1], ctx);
       return;
     }
-    if ((match = /^(run|pause)\s+#(\d+)$/.exec(text))) {
+    if ((match = /^(run|pause)\s+([^\s#]+#\d+|#?\d+)$/.exec(text))) {
       const goal = findGoal(match[2]!, ctx);
       if (goal) directAction(goal, match[1] === "run" ? "run" : "pause", ctx);
       return;
