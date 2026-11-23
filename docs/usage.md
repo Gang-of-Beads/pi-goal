@@ -143,7 +143,7 @@ Everything goes through `/goal`:
 |---|---|
 | `/goal` | Open the goal panel (current session by default; Tab switches scope) |
 | `/goal <task>` | Create a goal and clarify its TODOs interactively |
-| `/goal #<id>` | Open that goal's action menu in the current workspace |
+| `/goal #<id>` | Open that goal's action menu. A bare id is this workspace's; `<folder>#<id>` reaches another project's goal |
 | `/goal status [#<id>]` | Show goal status, TODO progress and accumulated time |
 | `/goal run #<id>` | Run / continue the goal (continues clarification if the plan is not confirmed) without opening the panel |
 | `/goal pause #<id>` | Pause the goal without opening the panel |
@@ -153,7 +153,22 @@ Everything goes through `/goal`:
 | `/goal export <id> @<name>` | Save as a global snippet |
 | `/goal help` | Show usage |
 
-Opening a goal requires `#`: `/goal #1`. A bare number such as `/goal 1` is ambiguous; it suggests `#1` and neither opens nor creates a goal. Text is treated as a subcommand only when it matches the forms above exactly: `run` / `pause` need `#<id>`, the `export` id must be numeric, `import` / `export` files must end with `.goal.sexp`, and `@` must be followed by a valid snippet name. Any other text (e.g. `/goal import the customer data`) creates a new goal. After typing `/goal `, subcommands, `#<id>` and snippet names autocomplete.
+Opening a goal requires `#`: `/goal #1`. A bare number such as `/goal 1` is ambiguous; it suggests `#1` and neither opens nor creates a goal.
+
+Every project numbers its goals from 1, so an id only means something inside its workspace. A bare `#1` is this workspace's goal; another project's goal of the same number is reached with its folder, e.g. `/goal status playground#1`, which also accepts it without opening the panel. Acting on such a goal writes it back to its own project instead of copying it here, and the panel lists it under `所有 Goal` with its folder.
+
+## Tools
+
+The agent drives the same transitions through tools, so a confirmed plan no longer waits for someone to type `/goal run`:
+
+| Tool | Action |
+|---|---|
+| `goal_status` | Read status, TODOs and whether a live session owns the goal (`#<id>` or `<folder>#<id>`, optional) |
+| `goal_run` | Start or continue a goal; refuses while a turn runs or a live session owns it |
+| `goal_pause` | Pause a running goal; its running TODOs go back to pending |
+| `goal_cancel` | Cancel a goal, optionally with the rollback turn |
+
+`goal_plan` and `goal_todo` keep their roles: planning and marking TODOs with evidence. Text is treated as a subcommand only when it matches the forms above exactly: `run` / `pause` need `#<id>`, the `export` id must be numeric, `import` / `export` files must end with `.goal.sexp`, and `@` must be followed by a valid snippet name. Any other text (e.g. `/goal import the customer data`) creates a new goal. After typing `/goal `, subcommands, `#<id>` and snippet names autocomplete.
 
 `/goal-import`, `/goal-export`, `/goal-snippet` and `/goal-snippet-save` are aliases with the same behavior as the corresponding usage above.
 

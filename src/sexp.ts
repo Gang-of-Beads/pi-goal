@@ -92,7 +92,11 @@ export function parseGoalTemplate(source: string): GoalTemplate {
       throw new Error("Unterminated string.");
     }
     const match = /^[a-zA-Z][a-zA-Z0-9-]*|^[0-9]+/.exec(source.slice(position));
-    if (!match) throw new Error(`Unexpected character at offset ${position}.`);
+    // A bare word (on_completion, patch-and-repeat) lands here: values are always quoted.
+    if (!match) {
+      const at = source.slice(Math.max(0, position - 20), position + 20).replace(/\s+/g, " ");
+      throw new Error(`Unexpected character at offset ${position} (…${at}…). Every value is a quoted string, e.g. (trigger "on_completion").`);
+    }
     position += match[0].length;
     return { symbol: match[0] };
   }
@@ -135,7 +139,7 @@ export function parseGoalTemplate(source: string): GoalTemplate {
   }
   function text(map: Map<string, Expr[]>, name: string): string {
     const values = map.get(name);
-    if (values?.length !== 1 || typeof values[0] !== "string" || !values[0].trim()) throw new Error(`${name} requires one nonempty quoted string.`);
+    if (values?.length !== 1 || typeof values[0] !== "string" || !values[0].trim()) throw new Error(`${name} requires one nonempty quoted string, e.g. (${name} "value").`);
     return values[0];
   }
   const template: GoalTemplate = { title: title[0]!, constraints: strings("constraints"), acceptance: strings("acceptance"), todos };
@@ -157,7 +161,12 @@ export function parseGoalTemplate(source: string): GoalTemplate {
   }
   if (fields.has("review-loop")) {
     const review = subfields("review-loop", ["name", "trigger", "read", "compare", "on-gap", "on-pass", "max-iterations"]);
-    if (text(review, "trigger") !== "on_completion" || text(review, "on-gap") !== "patch-and-repeat" || text(review, "on-pass") !== "stop") throw new Error("Unsupported review trigger or transition.");
+    // Name the field, what was read and what is accepted: the definition comes from a model, and a
+    // bare "unsupported" left it guessing through another clarification round.
+    for (const [field, allowed] of [["trigger", ["on_completion"]], ["on-gap", ["patch-and-repeat"]], ["on-pass", ["stop"]]] as const) {
+      const got = text(review, field);
+      if (!(allowed as readonly string[]).includes(got)) throw new Error(`review-loop ${field} must be ${allowed.map((value) => `"${value}"`).join(" or ")} (got "${got}").`);
+    }
     const iterations = review.get("max-iterations");
     const count = iterations?.length === 1 ? Number(symbol(iterations[0])) : NaN;
     if (!Number.isInteger(count) || count < 1 || count > 20) throw new Error("Review max-iterations must be an integer from 1 to 20.");

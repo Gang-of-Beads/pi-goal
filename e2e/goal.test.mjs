@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, mkdir, readFile, writeFile, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -473,6 +473,10 @@ test("real Pi RPC: invalid or cancelled template imports do not create goals", {
     '(goal (version 1) (title "approval without command") (approvals (approval "publish")))',
     '(goal (version 1) (title "blank approval") (approvals (approval " " (command "npm publish"))))',
     `(goal (version 1) (title "too many approvals") (approvals ${'(approval "a" (command "b")) '.repeat(31)}))`,
+    // A wrong transition names the field, what was read and what is accepted.
+    '(goal (version 1) (title "bad trigger") (checks (check "color" (standard "x"))) (benchmarks "b") (review-loop (name "review") (trigger "on_gap") (read "page") (compare "benchmark") (on-gap "patch-and-repeat") (on-pass "stop") (max-iterations 2)))',
+    // An unquoted value says how the field is written.
+    '(goal (version 1) (title "unquoted trigger") (checks (check "color" (standard "x"))) (benchmarks "b") (review-loop (name "review") (trigger on_completion) (read "page") (compare "benchmark") (on-gap "patch-and-repeat") (on-pass "stop") (max-iterations 2)))',
     "(".repeat(20) + ")".repeat(20),
     "x".repeat(65537),
   ]) {
@@ -480,6 +484,8 @@ test("real Pi RPC: invalid or cancelled template imports do not create goals", {
     await rpc.command("prompt", { message: `/goal import ${path}` });
     const error = await rpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === "error");
     assert.match(error.message, /模板操作失败/);
+    if (content.includes("bad trigger")) assert.match(error.message, /review-loop trigger must be "on_completion" \(got "on_gap"\)/);
+    if (content.includes("unquoted trigger")) assert.match(error.message, /Every value is a quoted string/);
   }
   await writeFile(path, '(goal (version 1) (title "cancelled") (todos (todo "do nothing")))');
   const pending = rpc.command("prompt", { message: `/goal import ${path}` });
@@ -510,16 +516,65 @@ test("real Pi RPC: Session / Workspace / all scopes include foreign workspace re
   const foreign = list.options.find((option) => option.includes(foreignWorkspace));
   assert.ok(foreign);
   rpc.respond(list, { value: foreign });
-  const details = await rpc.select("返回列表");
-  assert.deepEqual(details.options, ["返回列表"]);
-  assert.match(details.title, /foreign-session/);
-  assert.match(details.title, /TODO #1/);
+  // A goal of another project is adopted: it opens its action menu and is written back to its
+  // own workspace instead of being a read-only detail view.
+  const menu = await rpc.select("返回列表");
+  assert.ok(menu.options.includes("执行 / 继续"));
+  assert.match(menu.title, /#1/);
   // Snippet and import live in the "new goal" submenu.
   await rpc.select("＋ 新增目标");
   const create = await rpc.select("返回");
   assert.deepEqual(create.options, ["空白目标", "从 Snippet 创建", "导入 Goal 模板", "返回"]);
   await rpc.select("关闭");
   await pending;
+});
+
+test("real Pi RPC: a goal of another project keeps its own file and id when acted on here", { timeout: 60000 }, async (t) => {
+  const data = await fixture(t);
+  const { rpc } = await data.start();
+  const own = await seed(data.agent, data.workspace, "own-session");
+  const foreignWorkspace = join(dirname(data.workspace), "other-project");
+  const foreign = await seed(data.agent, foreignWorkspace, "other-session", "01900000-0000-7000-8000-00000000000f");
+  await rpc.command("new_session");
+  const pending = rpc.command("prompt", { message: "/goal" });
+  await rpc.select("切换到：所有 Goal");
+  const list = await rpc.dialog("select");
+  const entry = list.options.find((option) => option.includes(foreignWorkspace));
+  assert.ok(entry, "the foreign goal is listed with its project");
+  rpc.respond(list, { value: entry });
+  await rpc.select("暂停");
+  await rpc.select("关闭");
+  await pending;
+
+  // The foreign file changed; the session's own workspace gained no copy of it.
+  const foreignGoal = JSON.parse(await readFile(foreign, "utf8"));
+  assert.equal(foreignGoal.id, 1);
+  assert.equal(foreignGoal.workspace, foreignWorkspace);
+  assert.equal(foreignGoal.status, "paused");
+  const ownFiles = await readdir(goalsDir(data.agent, data.workspace));
+  assert.deepEqual(ownFiles.filter((name) => name !== "workspace.json"), [basename(own)]);
+});
+
+test("real Pi RPC: a bare id resolves to this workspace, a qualified one to the other project", { timeout: 60000 }, async (t) => {
+  const data = await fixture(t);
+  const { rpc } = await data.start();
+  const own = await seed(data.agent, data.workspace, "own-session");
+  const foreignWorkspace = join(dirname(data.workspace), "other-project");
+  const foreign = await seed(data.agent, foreignWorkspace, "other-session", "01900000-0000-7000-8000-00000000000e");
+  const foreignGoal = JSON.parse(await readFile(foreign, "utf8"));
+  await writeFile(foreign, `${JSON.stringify({ ...foreignGoal, text: "另一个项目的目标" }, null, 2)}\n`);
+  await rpc.command("new_session");
+  const notice = (type) => rpc.wait((record) => record.type === "extension_ui_request" && record.method === "notify" && record.notifyType === type);
+
+  // A bare #1 is this project's, even though another project also has one.
+  await rpc.command("prompt", { message: "/goal status #1" });
+  assert.match((await notice("info")).message, /真实 RPC 面板测试目标/);
+  // The other project's #1 is reachable by folder, without opening the panel first.
+  await rpc.command("prompt", { message: "/goal status other-project#1" });
+  assert.match((await notice("info")).message, /另一个项目的目标/);
+  // Reading never rewrites either file.
+  assert.equal(JSON.parse(await readFile(own, "utf8")).status, "pending");
+  assert.equal(JSON.parse(await readFile(foreign, "utf8")).status, "pending");
 });
 
 test("real Pi RPC: /goal status shows TODO icons, notes and elapsed time; interrupted runs settle on load", { timeout: 60000 }, async (t) => {
