@@ -692,3 +692,21 @@ test("real Pi RPC: a cross-session conflict refuses one save, then the next one 
   await pending;
   assert.equal(JSON.parse(await readFile(path, "utf8")).status, "pending");
 });
+
+test("real Pi RPC: a goal of another project is listed under its folder, not as a bare number", { timeout: 60000 }, async (t) => {
+  const data = await fixture(t);
+  const { rpc } = await data.start();
+  await seed(data.agent, data.workspace, "own-session");
+  const foreignWorkspace = join(dirname(data.workspace), "other-project");
+  await seed(data.agent, foreignWorkspace, "other-session", "01900000-0000-7000-8000-00000000000d");
+  await rpc.command("new_session");
+  const pending = rpc.command("prompt", { message: "/goal" });
+  await rpc.select("切换到：所有 Goal");
+  const list = await rpc.dialog("select");
+  // Both rows are #1; the foreign one says which project it belongs to, so the reader can tell them apart.
+  assert.ok(list.options.some((option) => option.includes("#1") && option.includes("other-project")));
+  rpc.respond(list, { value: list.options.find((option) => option.includes("other-project")) });
+  await rpc.select("返回列表");
+  await rpc.select("关闭");
+  await pending;
+});
