@@ -1128,7 +1128,7 @@ export default function goalExtension(pi: ExtensionAPI) {
   /** The /goal panel. With initial, it opens that goal's action menu directly and closes when the user leaves it. */
   async function panel(ctx: ExtensionCommandContext, initial?: Goal) {
     if (!ctx.hasUI) {
-      ctx.ui.notify(initial ? goalDetails(initial) : sections(ctx).map((section) => `${section.title} (${section.goals.length})\n${section.goals.map((goal) => [goalListLabel(goal), ...(goal.todos ?? []).flatMap((todo) => todoListLines(todo, plain, "  "))].join("\n")).join("\n") || "暂无目标"}`).join("\n\n"), "info");
+      ctx.ui.notify(initial ? goalDetails(initial) : sections(ctx).map((section) => `${section.title} (${section.goals.length})\n${section.goals.map((goal) => [`${goalListLabel(goal)}${goal.workspace && resolve(goal.workspace) !== resolve(ctx.cwd) ? ` · ${workspaceName(goal.workspace)}` : ""}`, ...(goal.todos ?? []).flatMap((todo) => todoListLines(todo, plain, "  "))].join("\n")).join("\n") || "暂无目标"}`).join("\n\n"), "info");
       return;
     }
     if (panelOpen) return;

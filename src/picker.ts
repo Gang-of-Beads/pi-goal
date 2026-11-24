@@ -1,4 +1,5 @@
 import { DynamicBorder, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { basename } from "node:path";
 import { Container, fuzzyFilter, Input, Key, matchesKey, type SelectItem, SelectList, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Goal } from "./index.ts";
 import { elapsedMs, formatDuration, GOAL_LEGEND, goalIcon, goalStatusText, type Paint, plain, progress, todoListLines, todoWindow } from "./status.ts";
@@ -24,7 +25,9 @@ export function goalItem(goal: Goal, showWorkspace: boolean, paint: Paint = plai
     ...(goal.updatedAt ? [`更新于 ${new Date(goal.updatedAt).toLocaleString()}`] : []),
     ...(showWorkspace && goal.workspace ? [goal.workspace] : []),
   ];
-  return { value: goalKey(goal), label: `${goalIcon(goal, paint)} #${goal.id} ${goal.text.replace(/\s+/g, " ")}`, description: details.join(" · ") };
+  // In the All goals scope another project's #1 and this one's look alike, so the row carries the folder.
+  const id = showWorkspace && goal.workspace ? `${basename(goal.workspace)}#${goal.id}` : `#${goal.id}`;
+  return { value: goalKey(goal), label: `${goalIcon(goal, paint)} ${id} ${goal.text.replace(/\s+/g, " ")}`, description: details.join(" · ") };
 }
 
 export function filterGoals(goals: readonly Goal[], query: string): Goal[] {
