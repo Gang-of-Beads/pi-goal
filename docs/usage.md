@@ -167,8 +167,11 @@ The agent drives the same transitions through tools, so a confirmed plan no long
 | `goal_run` | Start or continue a goal; refuses while a turn runs or a live session owns it |
 | `goal_pause` | Pause a running goal; its running TODOs go back to pending |
 | `goal_cancel` | Cancel a goal, optionally with the rollback turn |
+| `goal_todo` | Mark a TODO (done needs evidence): during the goal's run, or, when no goal is running, of a goal awaiting review, paused, pending or done — e.g. a blocked TODO the user has resolved since. The same rules as the panel apply: a done goal whose TODO is reopened goes back to pending, and finishing every TODO completes the goal unless it has a review contract |
+| `goal_complete` | Accept a goal once every TODO is done, as 标记完成 in the panel; goals with a design objective or review loop only finish this way. The user confirms in a dialog by default; `confirm: false` is for a goal the user already accepted in the conversation |
+| `goal_reopen` | Reopen a done or cancelled goal (pending, or clarifying without a confirmed plan), as 重新打开 in the panel |
 
-`goal_plan` and `goal_todo` keep their roles: planning and marking TODOs with evidence. Text is treated as a subcommand only when it matches the forms above exactly: `run` / `pause` need `#<id>`, the `export` id must be numeric, `import` / `export` files must end with `.goal.sexp`, and `@` must be followed by a valid snippet name. Any other text (e.g. `/goal import the customer data`) creates a new goal. After typing `/goal `, subcommands, `#<id>` and snippet names autocomplete.
+`goal_plan` keeps its role: clarifying and confirming plans. Cancelled goals are left alone until reopened, and apart from `goal_todo` on the goal being run, these tools refuse while a goal is running in this session or another live session owns it. Text is treated as a subcommand only when it matches the forms above exactly: `run` / `pause` need `#<id>`, the `export` id must be numeric, `import` / `export` files must end with `.goal.sexp`, and `@` must be followed by a valid snippet name. Any other text (e.g. `/goal import the customer data`) creates a new goal. After typing `/goal `, subcommands, `#<id>` and snippet names autocomplete.
 
 `/goal-import`, `/goal-export`, `/goal-snippet` and `/goal-snippet-save` are aliases with the same behavior as the corresponding usage above.
 

@@ -17,10 +17,12 @@ class PiRpc {
   stderr = "";
   sequence = 0;
 
-  constructor(workspace, agentDirectory) {
-    this.process = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-mcp", "-e", join(root, "src/index.ts")], {
+  constructor(workspace, agentDirectory, { script } = {}) {
+    // With a script, a scripted "faux" model (e2e/fixtures/faux-agent.ts) lets the agent call tools.
+    const extensions = script ? ["-e", join(root, "e2e/fixtures/faux-agent.ts")] : [];
+    this.process = spawn(process.execPath, [cli, "--mode", "rpc", "--offline", "--no-session", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-mcp", "-e", join(root, "src/index.ts"), ...extensions], {
       cwd: workspace,
-      env: { ...process.env, PI_CODING_AGENT_DIR: agentDirectory, PI_TELEMETRY: "0" },
+      env: { ...process.env, PI_CODING_AGENT_DIR: agentDirectory, PI_TELEMETRY: "0", ...(script ? { PI_GOAL_FAUX_SCRIPT: script } : {}) },
       stdio: ["pipe", "pipe", "pipe"],
     });
     let buffer = "";
@@ -107,15 +109,15 @@ async function fixture(t) {
     try { for (const process of processes) await process.close(); }
     finally { await rm(temporary, { recursive: true, force: true }); }
   });
-  const start = async () => {
-    const rpc = new PiRpc(workspace, agent);
+  const start = async (options) => {
+    const rpc = new PiRpc(workspace, agent, options);
     processes.push(rpc);
     const state = await rpc.command("get_state");
     const commands = await rpc.command("get_commands");
     assert.ok(commands.commands.some((command) => command.name === "goal"));
     return { rpc, state };
   };
-  return { workspace, agent, start };
+  return { workspace, agent, temporary, start };
 }
 
 /** Goals of a workspace live in <agent>/pi-goal/goals/<sha256(workspace)>/, never inside the project. */
@@ -709,4 +711,83 @@ test("real Pi RPC: a goal of another project is listed under its folder, not as 
   await rpc.select("返回列表");
   await rpc.select("关闭");
   await pending;
+});
+
+test("real Pi RPC: the agent finishes a blocked TODO, accepts a reviewed goal and reopens one", { timeout: 60000 }, async (t) => {
+  const fixtureData = await fixture(t);
+  const { workspace, agent } = fixtureData;
+  // A scripted model: one tool call per step (e2e/fixtures/faux-agent.ts).
+  const script = join(fixtureData.temporary, "script.json");
+  await writeFile(script, JSON.stringify([
+    { tool: "goal_todo", args: { goalId: 1, todoId: 2, status: "done", evidence: "PR 已合并" } },
+    { tool: "goal_todo", args: { goalId: 2, todoId: 1, status: "done", evidence: "已人工评审" } },
+    { tool: "goal_complete", args: { id: "#2" } },
+    { tool: "goal_complete", args: { id: "#1" } },
+    { tool: "goal_reopen", args: { id: "#1" } },
+    { tool: "goal_complete", args: { id: "#1" } },
+    { tool: "goal_complete", args: { id: "#1", confirm: false } },
+    { tool: "goal_todo", args: { goalId: 3, todoId: 1, status: "done", evidence: "x" } },
+    { text: "完成" },
+  ]));
+  const { rpc, state } = await fixtureData.start({ script });
+  const directory = goalsDir(agent, workspace);
+  await mkdir(directory, { recursive: true });
+  await writeFile(join(directory, "workspace.json"), `${JSON.stringify({ workspace })}\n`);
+  const now = new Date().toISOString();
+  const base = { workspace, sessionId: state.sessionId, createdAt: now, updatedAt: now, answers: [], planConfirmed: true, history: [] };
+  const goals = [
+    // Awaiting review with a blocked TODO the user has since resolved.
+    { ...base, id: 1, uuid: "01900000-0000-7000-8000-000000000011", text: "被阻塞的目标", status: "review",
+      todos: [{ id: 1, text: "实现", status: "done", completedAt: now, evidence: "ok" }, { id: 2, text: "等待合并", status: "blocked" }] },
+    // A review contract: finishing every TODO does not complete it on its own.
+    { ...base, id: 2, uuid: "01900000-0000-7000-8000-000000000012", text: "需要验收的设计目标", status: "review",
+      objective: { name: "site_design", priority: "OVERRIDE_ALL", target: "award tier" },
+      todos: [{ id: 1, text: "自查", status: "pending" }] },
+    { ...base, id: 3, uuid: "01900000-0000-7000-8000-000000000013", text: "已取消的目标", status: "cancelled",
+      todos: [{ id: 1, text: "x", status: "pending" }] },
+  ];
+  const paths = [];
+  for (const goal of goals) {
+    const path = join(directory, `${goal.uuid}.json`);
+    await writeFile(path, `${JSON.stringify(goal, null, 2)}\n`);
+    paths.push(path);
+  }
+  await rpc.command("new_session");
+  await rpc.command("set_model", { provider: "faux", modelId: "faux-agent" });
+  await rpc.command("prompt", { message: "收尾这几个目标" });
+  // goal_complete asks the user by default: #2 is accepted, the reopened #1 declined.
+  const accept = await rpc.dialog("confirm");
+  assert.match(accept.title, /验收目标 #2/);
+  rpc.respond(accept, { confirmed: true });
+  const declined = await rpc.dialog("confirm");
+  assert.match(declined.title, /验收目标 #1/);
+  rpc.respond(declined, { confirmed: false });
+  await rpc.wait((record) => record.type === "agent_settled");
+  const text = (record) => record.result.content.map((part) => part.text).join("");
+  const results = rpc.records.filter((record) => record.type === "tool_execution_end");
+  assert.equal(results.length, 8, JSON.stringify(results));
+
+  const [first, second, third] = await Promise.all(paths.map(async (path) => JSON.parse(await readFile(path, "utf8"))));
+  // The blocked TODO is done with its evidence; every TODO done completed goal #1 …
+  assert.equal(first.todos[1].status, "done");
+  assert.equal(first.todos[1].evidence, "PR 已合并");
+  assert.ok(Number.isFinite(Date.parse(first.todos[1].completedAt)));
+  // … then: accepting it again is refused, it is reopened, the user declines, and it is accepted
+  // without a dialog (the user had accepted it in the conversation).
+  assert.equal(first.status, "done");
+  // The review contract waited for goal_complete, which the user confirmed.
+  assert.equal(second.status, "done");
+  assert.equal(second.todos[0].evidence, "已人工评审");
+  // A cancelled goal is not touched.
+  assert.equal(third.status, "cancelled");
+  assert.equal(third.todos[0].status, "pending");
+  const outputs = results.map((record) => `${record.toolName}:${record.isError ? "error" : "ok"}:${text(record)}`);
+  assert.ok(outputs.some((line) => line.startsWith("goal_todo:ok:") && line.includes("goal #1 is now done")), outputs.join("\n"));
+  assert.ok(outputs.some((line) => line.startsWith("goal_todo:ok:") && line.includes("waits for goal_complete")), outputs.join("\n"));
+  assert.ok(outputs.some((line) => line === "goal_complete:ok:Goal #2: done"), outputs.join("\n"));
+  assert.ok(outputs.some((line) => line.startsWith("goal_complete:error:") && line.includes("already done")), outputs.join("\n"));
+  assert.ok(outputs.some((line) => line === "goal_reopen:ok:Goal #1: pending"), outputs.join("\n"));
+  assert.ok(outputs.some((line) => line.startsWith("goal_complete:error:") && line.includes("did not accept goal #1")), outputs.join("\n"));
+  assert.ok(outputs.some((line) => line === "goal_complete:ok:Goal #1: done"), outputs.join("\n"));
+  assert.ok(outputs.some((line) => line.startsWith("goal_todo:error:") && line.includes("cancelled")), outputs.join("\n"));
 });
