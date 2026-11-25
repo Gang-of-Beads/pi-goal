@@ -46,8 +46,9 @@ Covered today:
 - `/goal status`: TODO icons, completion times and done / blocked notes, accumulated time, interrupted runs settled at their last update on load, the session summary when nothing is running, and `status` never creating a goal.
 - Snippets: built-in list, extra project context, global save (with review), reuse across workspaces, user snippets overriding built-ins, refusing overwrites and invalid names, cancel creating nothing.
 - Design objectives, 8 CHECK dimensions, benchmarks and bounded review rules surviving import, restart, panel view and export; unsupported priorities, duplicate dimensions and unbounded reviews are rejected.
+- Agent tools through a scripted model (`e2e/fixtures/faux-agent.ts`, a "faux" provider from `@earendil-works/pi-ai` whose replies are tool calls): `goal_todo` on goals awaiting review (finishing a blocked TODO completes the goal; a review contract waits), `goal_complete` with the confirmation dialog accepted and declined and with `confirm: false`, `goal_reopen`, refusals for done and cancelled goals.
 
-Tests seed goal JSON and call no model or external service, so no credentials are needed. Real AI clarification, execution and rollback, terminal visuals and keyboard interaction are not covered and cannot be replaced by RPC panel tests.
+Tests seed goal JSON and call no real model or external service (the scripted model runs in-process), so no credentials are needed. Real AI clarification, execution and rollback, terminal visuals and keyboard interaction are not covered and cannot be replaced by RPC panel tests.
 
 ## Git hooks
 

@@ -46,8 +46,9 @@ Pi 直接加载 TypeScript，无需构建产物。`pnpm check` 执行类型检�
 - `/goal status`：TODO 图标、完成时间与完成 / 阻塞说明、累计时长，中断运行在加载时按最后更新时间结算，无执行中目标时的 Session 摘要，`status` 不会新建目标。
 - Snippet：内置列表、补充项目信息、全局保存（审阅编辑）、跨 workspace 复用、用户 snippet 覆盖内置、拒绝覆盖与非法名称、取消不创建。
 - 设计目标、8 个 CHECK 维度、基准与有界复审规则的导入、重启、面板查看及导出保真；不支持的优先级、重复维度与无限复审配置会拒绝。
+- 通过脚本化模型调用 agent 工具（`e2e/fixtures/faux-agent.ts`：用 `@earendil-works/pi-ai` 的 faux provider，回复即工具调用）：对待确认目标使用 `goal_todo`（完成阻塞项后目标自动完成；带复审约定的目标等待验收）、`goal_complete` 的确认对话框（同意与拒绝）及 `confirm: false`、`goal_reopen`，以及对已完成、已取消目标的拒绝。
 
-用例预置 goal JSON，不调用模型或外部服务、无需凭据。尚未覆盖真实 AI 的澄清提问、执行与回滚，也不验证终端视觉和键盘交互；这些不能由 RPC 面板测试替代。
+用例预置 goal JSON，不调用真实模型或外部服务（脚本化模型在进程内运行），无需凭据。尚未覆盖真实 AI 的澄清提问、执行与回滚，也不验证终端视觉和键盘交互；这些不能由 RPC 面板测试替代。
 
 ## Git hooks
 

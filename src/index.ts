@@ -566,7 +566,7 @@ export default function goalExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "goal_todo",
     label: "Goal TODO",
-    description: "Update a confirmed TODO of the currently running goal. done requires verification evidence; completion time is recorded by the plugin. Never update paused/cancelled goals or claim completion without evidence.",
+    description: "Update a confirmed TODO: of the goal this run executes, or of a goal awaiting review, paused, pending or done when no goal is running (e.g. a blocked TODO the user has since resolved). done requires verification evidence; completion time is recorded by the plugin. A goal whose TODOs are then all done completes as after a run. Never update cancelled goals or claim completion without evidence.",
     parameters: Type.Object({
       goalId: Type.Integer({ minimum: 1 }),
       todoId: Type.Integer({ minimum: 1 }),
@@ -575,17 +575,40 @@ export default function goalExtension(pi: ExtensionAPI) {
     }),
     async execute(_id, params, signal, _onUpdate, ctx) {
       if (signal?.aborted) throw new Error("Execution aborted.");
-      const goal = state.goals.find((item) => item.id === params.goalId);
-      if (!goal || activeId !== goal.id || goal.status !== "running" || !goal.planConfirmed) throw new Error("Goal is not currently running with a confirmed plan.");
-      const todo = goal.todos?.find((item) => item.id === params.todoId);
+      const running = state.goals.find((item) => item.id === params.goalId && activeId === item.id && item.status === "running");
+      const goal = running ?? findGoal(`#${params.goalId}`, ctx);
+      if (!goal) throw new Error(`No goal #${params.goalId} here. Use goal_status to see this project's goals.`);
+      if (!goal.planConfirmed || !goal.todos?.length) throw new Error(`Goal #${goal.id} has no confirmed plan; use goal_plan.`);
+      if (!running) {
+        // Outside its own run: only a goal at rest, and never while another goal runs here.
+        if (goal.status === "cancelled") throw new Error(`Goal #${goal.id} is cancelled; reopen it with goal_reopen first.`);
+        if (goal.status === "running" || activeId !== undefined) {
+          throw new Error(`Goal #${goal.id} cannot be updated while a goal is running (${activeId === undefined ? "in another live session" : `#${activeId} here`}); pause it first.`);
+        }
+      }
+      const todo = goal.todos.find((item) => item.id === params.todoId);
       if (!todo) throw new Error("TODO not found.");
       if (params.status === "done" && !params.evidence?.trim()) throw new Error("Verification evidence is required to complete a TODO.");
-      runWorked = true;
+      if (running) runWorked = true;
       todo.completedAt = params.status === "done" ? (todo.status === "done" ? todo.completedAt ?? new Date().toISOString() : new Date().toISOString()) : undefined;
       todo.status = params.status;
       todo.evidence = params.evidence?.trim() || undefined;
+      let note = "";
+      if (!running) {
+        // The same rules as marking TODOs in the panel.
+        if (goal.status === "done" && todo.status !== "done") {
+          goal.status = "pending";
+          note = ` Goal #${goal.id} reopened (pending).`;
+        } else if (goal.status !== "done" && autoCompletes(goal)) {
+          goal.status = "done";
+          if (resumableId === goal.id) resumableId = undefined;
+          note = ` Every TODO is done: goal #${goal.id} is now done.`;
+        } else if (allTodosDone(goal) && goal.status !== "done") {
+          note = ` Every TODO is done; goal #${goal.id} has a review contract, so it waits for goal_complete.`;
+        }
+      }
       save(ctx);
-      return { content: [{ type: "text", text: todoLabel(todo) }], details: structuredClone(todo) };
+      return { content: [{ type: "text", text: `${todoLabel(todo)}${note}` }], details: structuredClone(todo) };
     },
   });
 
@@ -653,6 +676,52 @@ export default function goalExtension(pi: ExtensionAPI) {
       const cancelled = await cancel(goal, ctx, () => true, params.rollback === true);
       if (!cancelled) throw new Error(`Goal ${params.id} was not cancelled (the choice dialog was closed).`);
       return { content: [{ type: "text", text: `Goal ${params.id}: cancelled${params.rollback === true ? ", rollback requested" : ""}` }], details: { status: goal.status } };
+    },
+  });
+
+  pi.registerTool({
+    name: "goal_complete",
+    label: "Goal complete",
+    description: "Accept a goal as done once every TODO is done (with evidence), as the panel's 标记完成 does; needed for goals with a review contract, which never complete on their own. By default the user confirms in a dialog. Pass confirm: false only when the user has already accepted this goal in the conversation.",
+    parameters: Type.Object({
+      id: Type.String({ description: "Goal `#id`, or `project#id` for another project." }),
+      confirm: Type.Optional(Type.Boolean({ description: "Ask the user in a dialog first (default true)." })),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const goal = goalForTool(params.id, ctx);
+      if (goal.status === "done") throw new Error(`Goal ${params.id} is already done.`);
+      if (goal.status === "cancelled") throw new Error(`Goal ${params.id} is cancelled; reopen it with goal_reopen first.`);
+      if (goal.status === "running" || activeId !== undefined) throw new Error(`Goal ${params.id} cannot be completed while a goal is running; pause it first.`);
+      if (!allTodosDone(goal)) {
+        const open = (goal.todos ?? []).filter((todo) => todo.status !== "done").map((todo) => `#${todo.id}`);
+        throw new Error(goal.planConfirmed && goal.todos?.length
+          ? `Goal ${params.id} still has unfinished TODOs (${open.join(", ")}); mark them with goal_todo and evidence first.`
+          : `Goal ${params.id} has no confirmed plan to complete.`);
+      }
+      if (params.confirm !== false) {
+        if (!ctx.hasUI) throw new Error("Confirming needs a UI; pass confirm: false only if the user already accepted the goal in the conversation.");
+        const accepted = await ctx.ui.confirm(`验收目标 #${goal.id}？`, `${goal.text.split("\n")[0]}\n\n所有 TODO 已完成，验收后目标标记为完成，之后仍可重新打开。`);
+        if (!accepted) throw new Error(`The user did not accept goal ${params.id}; it stays ${goal.status}.`);
+      }
+      if (resumableId === goal.id) resumableId = undefined;
+      goal.status = "done";
+      save(ctx);
+      return { content: [{ type: "text", text: `Goal ${params.id}: done` }], details: { status: goal.status } };
+    },
+  });
+
+  pi.registerTool({
+    name: "goal_reopen",
+    label: "Goal reopen",
+    description: "Reopen a done or cancelled goal, as the panel's 重新打开 does: pending with a confirmed plan, otherwise clarifying. TODOs keep their state; run it again with goal_run.",
+    parameters: Type.Object({ id: Type.String({ description: "Goal `#id`, or `project#id` for another project." }) }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const goal = goalForTool(params.id, ctx);
+      if (goal.status !== "done" && goal.status !== "cancelled") throw new Error(`Goal ${params.id} is ${goal.status}, not done or cancelled.`);
+      if (activeId !== undefined) throw new Error(`Goal ${params.id} cannot be reopened while goal #${activeId} is running; pause it first.`);
+      goal.status = goal.planConfirmed ? "pending" : "clarifying";
+      save(ctx);
+      return { content: [{ type: "text", text: `Goal ${params.id}: ${goal.status}` }], details: { status: goal.status } };
     },
   });
 
